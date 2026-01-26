@@ -137,6 +137,13 @@ Screen {
 }
 
 /* Task Panel - Right side */
+#task-header {
+    width: 100%;
+    height: 1;
+    text-style: bold;
+    margin: 0 0 1 0;
+}
+
 #task-list {
     width: 100%;
     height: 1fr;
@@ -145,9 +152,9 @@ Screen {
 
 .task-item {
     width: 100%;
-    height: auto;
+    height: 1;
     padding: 0;
-    margin: 0 0 0 0;
+    margin: 0;
 }
 
 .task-pending {

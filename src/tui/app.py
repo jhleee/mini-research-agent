@@ -46,6 +46,7 @@ class MainScreen(Screen):
                 yield InputBar(id="input-area")
 
             with Vertical(id="right-panel"):
+                yield Static("[bold]Todo[/bold]", id="task-header")
                 yield TaskPanel(id="task-panel")
 
         yield Footer("Ctrl+Q: Quit | Escape: Cancel", id="footer")
