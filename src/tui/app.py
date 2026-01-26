@@ -38,7 +38,7 @@ class MainScreen(Screen):
         self.controller = controller
 
     def compose(self) -> ComposeResult:
-        yield Header(f"Simple Research - [{MODEL_DISPLAY_NAME}]", id="header")
+        yield Header(f"Mini Research", id="header")
 
         with Container(id="main-container"):
             with Vertical(id="left-panel"):
