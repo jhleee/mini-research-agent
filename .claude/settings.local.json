@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "mcp__context7__resolve-library-id",
+      "Bash(tree:*)",
+      "Bash(chcp:*)"
+    ]
+  }
+}

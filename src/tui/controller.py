@@ -1,0 +1,236 @@
+"""Controller for the Research Agent TUI."""
+import asyncio
+from typing import Callable, Optional
+
+from .models import AppState, MessageRole, TaskStatus, Task
+from ..agent import run_research_with_tools
+
+
+class ResearchController:
+    """Controller that manages the research agent and state."""
+
+    def __init__(self):
+        self.state = AppState()
+        self._on_state_change: Optional[Callable] = None
+        self._on_message: Optional[Callable] = None
+        self._on_task_update: Optional[Callable] = None
+        self._on_loading: Optional[Callable] = None
+        self._on_tasks_clear: Optional[Callable] = None
+        self._research_task: Optional[asyncio.Task] = None
+
+    def set_callbacks(
+        self,
+        on_state_change: Optional[Callable] = None,
+        on_message: Optional[Callable] = None,
+        on_task_update: Optional[Callable] = None,
+        on_loading: Optional[Callable] = None,
+        on_tasks_clear: Optional[Callable] = None,
+    ):
+        self._on_state_change = on_state_change
+        self._on_message = on_message
+        self._on_task_update = on_task_update
+        self._on_loading = on_loading
+        self._on_tasks_clear = on_tasks_clear
+
+    def _notify_state_change(self):
+        if self._on_state_change:
+            self._on_state_change(self.state)
+
+    def _notify_message(self, role: MessageRole, content: str):
+        msg = self.state.add_message(role, content)
+        if self._on_message:
+            self._on_message(msg)
+        self._notify_state_change()
+
+    def _notify_task_update(self, task: Task):
+        if self._on_task_update:
+            self._on_task_update(task)
+        self._notify_state_change()
+
+    def _show_loading(self, text: str = "LLM responding"):
+        if self._on_loading:
+            self._on_loading(True, text)
+
+    def _hide_loading(self):
+        if self._on_loading:
+            self._on_loading(False, "")
+
+    def add_user_message(self, content: str):
+        self._notify_message(MessageRole.USER, content)
+
+    def add_assistant_message(self, content: str):
+        self._hide_loading()
+        self._notify_message(MessageRole.ASSISTANT, content)
+
+    def add_thinking_message(self, content: str):
+        self._hide_loading()
+        self._notify_message(MessageRole.THINKING, content)
+
+    def add_system_message(self, content: str):
+        self._hide_loading()
+        self._notify_message(MessageRole.SYSTEM, content)
+
+    def add_tool_message(self, content: str):
+        self._hide_loading()
+        self._notify_message(MessageRole.TOOL, content)
+
+    def create_task(self, task_id: str, title: str) -> Task:
+        task = self.state.add_task(task_id, title)
+        self._notify_task_update(task)
+        return task
+
+    def update_task(self, task_id: str, status: TaskStatus):
+        task = self.state.update_task_status(task_id, status)
+        if task:
+            self._notify_task_update(task)
+
+    def set_input_enabled(self, enabled: bool):
+        self.state.input_enabled = enabled
+        self._notify_state_change()
+
+    async def start_research(self, query: str):
+        if self.state.is_researching:
+            return
+
+        self.state.is_researching = True
+        self.state.current_query = query
+        self.state.clear_tasks()
+        if self._on_tasks_clear:
+            self._on_tasks_clear()
+        self.set_input_enabled(False)
+
+        self.add_user_message(query)
+
+        # Show loading
+        self._show_loading("Planning research")
+
+        try:
+            def on_event(event_type: str, data: dict):
+                self._handle_event(event_type, data)
+
+            report = await run_research_with_tools(query, callback=on_event)
+
+            self._hide_loading()
+
+            # Complete all remaining tasks
+            for task in self.state.tasks:
+                if task.status != TaskStatus.COMPLETED:
+                    self.update_task(task.id, TaskStatus.COMPLETED)
+
+            self.add_assistant_message(report)
+
+        except Exception as e:
+            self._hide_loading()
+            self.add_system_message(f"Error: {str(e)}")
+
+        finally:
+            self._hide_loading()
+            self.state.is_researching = False
+            self.set_input_enabled(True)
+            self._notify_state_change()
+
+    def _handle_event(self, event_type: str, data: dict):
+        """Handle events from the research agent."""
+        if event_type == "node_start":
+            node = data.get("node", "")
+            self._handle_node_start(node, data)
+
+        elif event_type == "plan_created":
+            queries = data.get("queries", [])
+            self._handle_plan_created(queries)
+
+        elif event_type == "query_completed":
+            completed = data.get("completed", [])
+            self._handle_query_completed(completed)
+
+        elif event_type == "tool_call":
+            tool_name = data.get("tool", "")
+            args = data.get("args", {})
+            self._handle_tool_call(tool_name, args)
+
+        elif event_type == "tool_result":
+            tool_name = data.get("tool", "")
+            result = data.get("result", "")
+            self._handle_tool_result(tool_name, result)
+
+        elif event_type == "thinking":
+            msg = data.get("message", "")
+            self.add_thinking_message(msg)
+
+        elif event_type == "llm_start":
+            msg = data.get("message", "LLM responding")
+            self._show_loading(msg)
+
+    def _handle_node_start(self, node: str, data: dict):
+        # Show loading for LLM nodes
+        loading_msgs = {
+            "plan": "Creating plan",
+            "research": "Analyzing",
+            "synthesize": "Writing report",
+        }
+        if node in loading_msgs:
+            self._show_loading(loading_msgs[node])
+
+    def _handle_plan_created(self, queries: list):
+        """Handle research plan creation - add queries as tasks."""
+        # Skip if already have tasks (avoid duplicates)
+        if self.state.tasks:
+            return
+
+        self._hide_loading()
+
+        for i, query in enumerate(queries):
+            task_id = f"query_{i}"
+            # Truncate long queries for display
+            title = query if len(query) <= 50 else query[:47] + "..."
+            self.create_task(task_id, title)
+
+        # Mark first query as in progress
+        if queries:
+            self.update_task("query_0", TaskStatus.IN_PROGRESS)
+
+        self.add_system_message(f"Research plan: {len(queries)} queries")
+
+    def _handle_query_completed(self, completed: list):
+        """Mark completed queries in task list."""
+        for i, query in enumerate(completed):
+            task_id = f"query_{i}"
+            existing = next((t for t in self.state.tasks if t.id == task_id), None)
+            if existing and existing.status != TaskStatus.COMPLETED:
+                self.update_task(task_id, TaskStatus.COMPLETED)
+
+        # Mark next query as in progress
+        next_idx = len(completed)
+        next_task_id = f"query_{next_idx}"
+        next_task = next((t for t in self.state.tasks if t.id == next_task_id), None)
+        if next_task and next_task.status == TaskStatus.PENDING:
+            self.update_task(next_task_id, TaskStatus.IN_PROGRESS)
+
+    def _handle_tool_call(self, tool_name: str, args: dict):
+        self._hide_loading()
+        if tool_name == "web_search":
+            query = args.get("query", "")
+            self.add_tool_message(f"Searching: {query}")
+            self._show_loading("Searching web")
+        elif tool_name == "read_webpage":
+            url = args.get("url", "")
+            short_url = url[:60] + "..." if len(url) > 60 else url
+            self.add_tool_message(f"Reading: {short_url}")
+            self._show_loading("Reading page")
+        else:
+            self.add_tool_message(f"Calling: {tool_name}")
+
+    def _handle_tool_result(self, tool_name: str, result: str):
+        self._hide_loading()
+        # Show truncated result
+        short_result = result[:150] + "..." if len(result) > 150 else result
+        short_result = short_result.replace("\n", " ")
+        self.add_tool_message(f"Result: {short_result}")
+
+    def cancel_research(self):
+        self._hide_loading()
+        if self._research_task and not self._research_task.done():
+            self._research_task.cancel()
+            self.state.is_researching = False
+            self.set_input_enabled(True)
+            self.add_system_message("Research cancelled.")
