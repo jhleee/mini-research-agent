@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Deep Research Agent - An intelligent research agent that decomposes complex queries into sub-questions, conducts web searches, reads webpages, and synthesizes findings into comprehensive markdown reports.
 
-**Tech Stack:** Python with LangGraph for agent orchestration, LangChain/OpenAI for LLM calls, Textual for TUI, Rich for CLI formatting, httpx for HTTP/SSE streaming.
+**Tech Stack:** Python with LangGraph for agent orchestration, LangChain/OpenAI for LLM calls, Textual for TUI, httpx for HTTP/SSE streaming.
 
 **LLM:** Z.AI API (glm-4.7 model) with MCP tool endpoints for web search and reading.
 
@@ -16,14 +16,8 @@ Deep Research Agent - An intelligent research agent that decomposes complex quer
 # Install dependencies
 pip install -r requirements.txt
 
-# TUI mode (default)
+# Run the application
 python run.py
-
-# CLI mode - interactive
-python run.py --cli
-
-# CLI mode - single query
-python run.py --cli "your research question"
 ```
 
 ## Architecture
@@ -63,8 +57,6 @@ Uses HTTP streaming (SSE) with JSON-RPC 2.0 protocol. Content truncated to 8000 
 - `views.py` - ChatPanel, TaskPanel, InputBar widgets
 - `models.py` - ChatMessage, Task, AppState dataclasses
 
-**CLI (`src/cli.py`)**: Rich-formatted output with progress tracking
-
 ## Configuration
 
 Environment variables in `.env`:
@@ -81,6 +73,5 @@ Endpoints configured in `src/config.py`:
 
 ## Key Entry Points
 
-- `run.py` - Main entry, mode selection
-- `src/agent.py:run_research()` - Programmatic async API
+- `run.py` - Main entry point
 - `src/agent.py:run_research_with_tools()` - Async API with event callbacks

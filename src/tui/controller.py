@@ -5,6 +5,13 @@ from typing import Callable, Optional
 from .models import AppState, MessageRole, TaskStatus, Task
 from ..agent import run_research_with_tools
 
+# Debug logging to file
+DEBUG_LOG = open("debug.log", "w", encoding="utf-8")
+
+def debug_log(msg: str):
+    DEBUG_LOG.write(f"{msg}\n")
+    DEBUG_LOG.flush()
+
 
 class ResearchController:
     """Controller that manages the research agent and state."""
@@ -131,6 +138,8 @@ class ResearchController:
 
     def _handle_event(self, event_type: str, data: dict):
         """Handle events from the research agent."""
+        debug_log(f"Event: {event_type}, Data: {data}")
+
         if event_type == "node_start":
             node = data.get("node", "")
             self._handle_node_start(node, data)
@@ -173,8 +182,12 @@ class ResearchController:
 
     def _handle_plan_created(self, queries: list):
         """Handle research plan creation - add queries as tasks."""
+        debug_log(f"_handle_plan_created called with {len(queries)} queries")
+        debug_log(f"Current tasks: {len(self.state.tasks)}")
+
         # Skip if already have tasks (avoid duplicates)
         if self.state.tasks:
+            debug_log("Skipping - tasks already exist")
             return
 
         self._hide_loading()
@@ -183,6 +196,7 @@ class ResearchController:
             task_id = f"query_{i}"
             # Truncate long queries for display
             title = query if len(query) <= 50 else query[:47] + "..."
+            debug_log(f"Creating task: {task_id} - {title}")
             self.create_task(task_id, title)
 
         # Mark first query as in progress

@@ -259,48 +259,6 @@ def create_research_graph():
     return graph.compile()
 
 
-async def run_research(query: str, callback=None) -> str:
-    """Run a research query and return the report.
-
-    Args:
-        query: The research question to investigate.
-        callback: Optional callback function for progress updates.
-
-    Returns:
-        The final research report.
-    """
-    graph = create_research_graph()
-
-    initial_state = {
-        "query": query,
-        "messages": [],
-        "research_plan": [],
-        "search_queries": [],
-        "read_urls": [],
-        "findings": [],
-        "iteration": 0,
-        "report": "",
-        "status": "planning",
-    }
-
-    # Run the graph
-    final_state = None
-    async for state in graph.astream(initial_state):
-        final_state = state
-        if callback:
-            # Get the node name and state
-            for node_name, node_state in state.items():
-                callback(node_name, node_state)
-
-    # Extract final report
-    if final_state:
-        for node_state in final_state.values():
-            if isinstance(node_state, dict) and node_state.get("report"):
-                return node_state["report"]
-
-    return "Research could not be completed."
-
-
 async def run_research_with_tools(query: str, callback=None) -> str:
     """Run research with detailed event callbacks for tool usage.
 

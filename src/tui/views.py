@@ -34,11 +34,17 @@ class TaskWidget(Static):
     """A single task widget."""
 
     def __init__(self, task: Task, **kwargs):
-        icon = task.get_status_icon()
-        super().__init__(f"{icon} {task.title}", **kwargs)
-        self.task = task
+        # Color-coded checkbox style based on status
+        status_styles = {
+            TaskStatus.PENDING: ("[dim][  ][/dim]", "[dim]"),
+            TaskStatus.IN_PROGRESS: ("[yellow][..][/yellow]", "[yellow]"),
+            TaskStatus.COMPLETED: ("[green][*][/green]", "[green]"),
+        }
+        icon, color = status_styles.get(task.status, ("[dim][  ][/dim]", "[dim]"))
+        content = f"{icon} {color}{task.title}[/]"
+        super().__init__(content, **kwargs)
+        self._task_data = task
         self.add_class("task-item")
-        self.add_class(task.get_css_class())
 
 
 class LoadingWidget(Static):
@@ -119,12 +125,14 @@ class TaskPanel(Widget):
         yield VerticalScroll(id="task-list")
 
     def add_task(self, task: Task):
+        from .controller import debug_log
         try:
             task_list = self.query_one("#task-list", VerticalScroll)
             widget = TaskWidget(task, id=f"task-{task.id}")
             task_list.mount(widget)
-        except Exception:
-            pass
+            debug_log(f"TaskPanel.add_task: mounted {task.id}")
+        except Exception as e:
+            debug_log(f"TaskPanel.add_task error: {e}")
 
     def update_task(self, task: Task):
         try:
