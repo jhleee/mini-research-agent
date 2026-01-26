@@ -125,47 +125,88 @@ mini-research-agent/
                         └────────┬────────┘
                                  │
                                  ▼
+              ┌─────────────────────────────────────┐
+              │                                     │
+              │  ┌─────────────────┐                │
+              │  │  research_node  │◄───────────┐   │
+              │  │                 │            │   │
+              │  │ LLM + Tools     │            │   │
+              │  │ (도구 호출 결정) │            │   │
+              │  └────────┬────────┘            │   │
+              │           │                     │   │
+              │           ▼                     │   │
+              │  ┌─────────────────┐            │   │
+              │  │should_continue()│            │   │
+              │  │   (라우팅)       │            │   │
+              │  └────────┬────────┘            │   │
+              │           │                     │   │
+              │     ┌─────┼─────┬───────┐       │   │
+              │     │     │     │       │       │   │
+              │     ▼     │     ▼       ▼       │   │
+              │ "tools"   │ "research" "end"    │   │
+              │     │     │     │               │   │
+              │     │     │     └───────┐       │   │
+              │     ▼     │             │       │   │
+              │  ┌────────┴──┐          │       │   │
+              │  │tools_node │          │       │   │
+              │  │           │          │       │   │
+              │  │-web_search│          │       │   │
+              │  │-read_page │          │       │   │
+              │  └─────┬─────┘          │       │   │
+              │        │                │       │   │
+              │        ▼                │       │   │
+              │  ┌────────────┐         │       │   │
+              │  │process_    │         │       │   │
+              │  │tool_results│─────────┼───────┘   │
+              │  │            │         │           │
+              │  │- 결과 추출  │         │           │
+              │  │- 다음 태스크│         │           │
+              │  └────────────┘         │           │
+              │                         │           │
+              │  Research Loop          │           │
+              └─────────────────────────┼───────────┘
+                                        │
+                          "synthesize"  │
+                                        ▼
                         ┌─────────────────┐
-                        │  research_node  │◄─────────────────┐
-                        │                 │                  │
-                        │ LLM + Tools     │                  │
-                        │ (도구 호출 결정) │                  │
-                        └────────┬────────┘                  │
-                                 │                           │
-                                 ▼                           │
-                        ┌─────────────────┐                  │
-                        │should_continue()│                  │
-                        │   (라우팅)       │                  │
-                        └────────┬────────┘                  │
-                                 │                           │
-            ┌────────────────────┼────────────────────┐      │
-            │                    │                    │      │
-            ▼                    ▼                    ▼      │
-     ┌──────────┐        ┌──────────┐         ┌──────────┐  │
-     │"tools"   │        │"research"│         │"synth."  │  │
-     └────┬─────┘        └──────────┘         └────┬─────┘  │
-          │                                        │        │
-          ▼                                        ▼        │
-   ┌──────────────┐                       ┌──────────────┐  │
-   │  tools_node  │                       │synthesize_   │  │
-   │              │                       │    node      │  │
-   │ - web_search │                       │              │  │
-   │ - read_page  │                       │ 최종 리포트   │  │
-   └──────┬───────┘                       │ 생성         │  │
-          │                               └──────┬───────┘  │
-          ▼                                      │          │
-   ┌──────────────┐                              │          │
-   │process_tool_ │                              │          │
-   │   results    │                              │          │
-   │              │                              │          │
-   │ - 결과 추출   │──────────────────────────────┘          │
-   │ - 다음 태스크 │─────────────────────────────────────────┘
-   └──────────────┘
+                        │ synthesize_node │
+                        │                 │
+                        │ 최종 리포트 생성 │
+                        └────────┬────────┘
                                  │
                                  ▼
                         ┌─────────────────┐
                         │      END        │
                         └─────────────────┘
+```
+
+### 그래프 엣지 정의
+
+```python
+# src/agent.py:create_research_graph()
+
+# 엣지 구성
+graph.set_entry_point("plan")
+graph.add_edge("plan", "research")
+
+# research 노드 이후 조건부 라우팅
+graph.add_conditional_edges(
+    "research",
+    should_continue,
+    {
+        "tools": "tools",
+        "research": "research",
+        "synthesize": "synthesize",
+        "end": END,
+    }
+)
+
+# tools → process_results → research (항상 research로 복귀)
+graph.add_edge("tools", "process_results")
+graph.add_edge("process_results", "research")
+
+# synthesize → END
+graph.add_edge("synthesize", END)
 ```
 
 ### 노드 상세 설명
@@ -227,15 +268,18 @@ def should_continue(state):
 ```python
 class ResearchState(TypedDict):
     query: str                    # 원본 사용자 질문
-    messages: List[BaseMessage]   # LLM 메시지 히스토리
-    research_plan: List[str]      # 플랫 쿼리 리스트 (하위 호환)
-    hierarchical_plan: HierarchicalPlan  # 계층적 계획 구조
-    current_main_task_id: str     # 현재 실행 중인 메인 태스크 ID
-    current_sub_task_id: str      # 현재 실행 중인 서브 태스크 ID
-    findings: List[str]           # 수집된 연구 결과
+    messages: Annotated[list, add_messages]  # LLM 메시지 히스토리 (자동 병합)
+    research_plan: list[str]      # 플랫 쿼리 리스트 (하위 호환)
+    search_queries: list[str]     # 실행된 검색 쿼리 목록
+    read_urls: list[str]          # 읽은 URL 목록
+    findings: list[str]           # 수집된 연구 결과
     iteration: int                # 루프 카운터
     report: str                   # 최종 마크다운 리포트
     status: str                   # "planning" → "researching" → "synthesizing" → "done"
+    hierarchical_plan: Optional[HierarchicalPlan]  # 계층적 계획 구조
+    current_main_task_id: Optional[str]  # 현재 실행 중인 메인 태스크 ID
+    current_sub_task_id: Optional[str]   # 현재 실행 중인 서브 태스크 ID
+    planning_phase: str           # "intent_analysis" → "decomposition" → "validation" → "complete"
 ```
 
 ### 계층적 계획 구조
@@ -244,16 +288,17 @@ class ResearchState(TypedDict):
 HierarchicalPlan:
   ├─ original_query: str          # 원본 질문
   ├─ intent_count: int            # 식별된 의도 수
-  ├─ main_tasks: List[MainTask]   # 메인 태스크 리스트
+  ├─ main_tasks: list[MainTask]   # 메인 태스크 리스트
   │   ├─ id: str                  # "1", "2", ...
   │   ├─ topic: str               # 주제명
   │   ├─ description: str         # 주제 설명
-  │   ├─ status: TaskStatus       # pending/in_progress/completed
-  │   └─ sub_tasks: List[SubTask] # 서브 태스크 리스트
-  │       ├─ id: str              # "1.1", "1.2", ...
-  │       ├─ query: str           # 검색 쿼리
-  │       ├─ status: TaskStatus
-  │       └─ findings: List[str]  # 수집된 정보
+  │   ├─ status: str              # TaskStatus (pending/in_progress/completed)
+  │   ├─ sub_tasks: list[SubTask] # 서브 태스크 리스트
+  │   │   ├─ id: str              # "1.1", "1.2", ...
+  │   │   ├─ query: str           # 검색 쿼리
+  │   │   ├─ status: str          # TaskStatus
+  │   │   └─ findings: list[str]  # 수집된 정보
+  │   └─ summary: str             # 메인 태스크에 대한 결과 요약
   ├─ is_validated: bool
   └─ refinement_count: int
 ```
