@@ -866,7 +866,7 @@ def create_research_graph():
     return graph.compile()
 
 
-async def run_research_with_tools(query: str, callback=None) -> str:
+async def run_research_with_tools(query: str, callback=None, config={ "recursion_limit": 200}) -> str:
     """Run research with detailed event callbacks for tool usage.
 
     Args:
@@ -903,7 +903,7 @@ async def run_research_with_tools(query: str, callback=None) -> str:
     last_main_task_id = None
     last_sub_task_id = None
 
-    async for state in graph.astream(initial_state):
+    async for state in graph.astream(initial_state, config=config):
         final_state = state
 
         for node_name, node_state in state.items():
