@@ -1,6 +1,41 @@
 """State definitions for the research agent."""
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, Optional
+from enum import Enum
 from langgraph.graph.message import add_messages
+
+
+class TaskStatus(str, Enum):
+    """Status of a research task."""
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
+
+class SubTask(TypedDict):
+    """A specific search query under a main task."""
+    id: str                    # e.g., "1.1", "1.2"
+    query: str                 # The actual search query
+    status: str                # TaskStatus value
+    findings: list[str]        # Findings specific to this sub-task
+
+
+class MainTask(TypedDict):
+    """A main research topic identified from intent analysis."""
+    id: str                    # e.g., "1", "2"
+    topic: str                 # The main topic description
+    description: str           # Brief description of what to research
+    status: str                # TaskStatus value
+    sub_tasks: list[SubTask]   # Sub-tasks (search queries) under this main task
+    summary: str               # Summary of findings for this main task
+
+
+class HierarchicalPlan(TypedDict):
+    """The complete hierarchical research plan."""
+    original_query: str        # The user's original query
+    intent_count: int          # Number of independent intents identified
+    main_tasks: list[MainTask] # List of main tasks
+    is_validated: bool         # Whether the plan passed validation
+    refinement_count: int      # Number of refinement iterations
 
 
 class ResearchState(TypedDict):
@@ -31,3 +66,13 @@ class ResearchState(TypedDict):
 
     # Status: planning, researching, synthesizing, done
     status: str
+
+    # Hierarchical research plan (enhanced planning)
+    hierarchical_plan: Optional[HierarchicalPlan]
+
+    # Current execution context for hierarchical plan
+    current_main_task_id: Optional[str]    # Which main task is being researched
+    current_sub_task_id: Optional[str]     # Which sub-task is being executed
+
+    # Planning phase: intent_analysis, decomposition, validation, complete
+    planning_phase: str

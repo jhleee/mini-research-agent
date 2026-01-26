@@ -16,3 +16,9 @@ WEB_READER_ENDPOINT = "https://api.z.ai/api/mcp/web_reader/mcp"
 # Agent Configuration
 MAX_SEARCH_RESULTS = 5
 MAX_ITERATIONS = 10
+
+# Planning Configuration (Hierarchical Task Decomposition)
+MAX_MAIN_TASKS = 4       # Maximum independent topics from intent analysis
+MAX_SUB_TASKS = 4        # Maximum queries per main task
+MAX_REFINEMENTS = 1      # Maximum plan refinement iterations
+VALIDATION_THRESHOLD = 0.7  # Confidence threshold for plan validation

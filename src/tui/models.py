@@ -12,6 +12,7 @@ class MessageRole(Enum):
     SYSTEM = "system"
     THINKING = "thinking"
     TOOL = "tool"
+    ERROR = "error"
 
 
 class TaskStatus(Enum):

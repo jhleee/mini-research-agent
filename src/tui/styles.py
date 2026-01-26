@@ -85,6 +85,11 @@ Screen {
     color: $accent;
 }
 
+.error-message {
+    color: $error;
+    text-style: bold;
+}
+
 /* Loading widget */
 .loading-widget {
     width: 100%;

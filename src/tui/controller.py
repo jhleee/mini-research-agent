@@ -81,6 +81,10 @@ class ResearchController:
         self._hide_loading()
         self._notify_message(MessageRole.TOOL, content)
 
+    def add_error_message(self, content: str):
+        self._hide_loading()
+        self._notify_message(MessageRole.ERROR, content)
+
     def create_task(self, task_id: str, title: str) -> Task:
         task = self.state.add_task(task_id, title)
         self._notify_task_update(task)
@@ -128,7 +132,7 @@ class ResearchController:
 
         except Exception as e:
             self._hide_loading()
-            self.add_system_message(f"Error: {str(e)}")
+            self.add_error_message(f"{str(e)}")
 
         finally:
             self._hide_loading()
@@ -144,9 +148,17 @@ class ResearchController:
             node = data.get("node", "")
             self._handle_node_start(node, data)
 
+        elif event_type == "hierarchical_plan_created":
+            self._handle_hierarchical_plan(data)
+
+        elif event_type == "task_progress":
+            self._handle_task_progress(data)
+
         elif event_type == "plan_created":
-            queries = data.get("queries", [])
-            self._handle_plan_created(queries)
+            # Only handle if hierarchical plan wasn't already created
+            if not self.state.tasks:
+                queries = data.get("queries", [])
+                self._handle_plan_created(queries)
 
         elif event_type == "query_completed":
             completed = data.get("completed", [])
@@ -240,6 +252,54 @@ class ResearchController:
         short_result = result[:150] + "..." if len(result) > 150 else result
         short_result = short_result.replace("\n", " ")
         self.add_tool_message(f"Result: {short_result}")
+
+    def _handle_hierarchical_plan(self, data: dict):
+        """Create hierarchical task list from plan."""
+        debug_log(f"_handle_hierarchical_plan called with {data}")
+
+        # Skip if already have tasks (avoid duplicates)
+        if self.state.tasks:
+            debug_log("Skipping - tasks already exist")
+            return
+
+        self._hide_loading()
+
+        main_tasks = data.get("main_tasks", [])
+        intent_count = data.get("intent_count", len(main_tasks))
+
+        for main_task in main_tasks:
+            main_id = f"main_{main_task['id']}"
+            main_title = f"[{main_task['topic']}]"
+            debug_log(f"Creating main task: {main_id} - {main_title}")
+            self.create_task(main_id, main_title)
+
+            # Create sub-tasks with indentation
+            for sub_task in main_task.get("sub_tasks", []):
+                sub_id = f"sub_{sub_task['id']}"
+                query = sub_task["query"]
+                sub_title = f"  ├─ {query[:40]}..." if len(query) > 40 else f"  ├─ {query}"
+                debug_log(f"Creating sub task: {sub_id} - {sub_title}")
+                self.create_task(sub_id, sub_title)
+
+        total_tasks = sum(len(mt.get("sub_tasks", [])) for mt in main_tasks)
+        self.add_system_message(f"Plan: {intent_count} topics, {total_tasks} queries")
+
+    def _handle_task_progress(self, data: dict):
+        """Update task progress for hierarchical tasks."""
+        main_id = data.get("main_task_id")
+        sub_id = data.get("sub_task_id")
+        status = data.get("status", "in_progress")
+
+        debug_log(f"Task progress: main={main_id}, sub={sub_id}, status={status}")
+
+        if status == "in_progress":
+            # Update main task to in_progress
+            self.update_task(f"main_{main_id}", TaskStatus.IN_PROGRESS)
+            # Update sub-task to in_progress
+            self.update_task(f"sub_{sub_id}", TaskStatus.IN_PROGRESS)
+        elif status == "completed":
+            # Mark sub-task as completed
+            self.update_task(f"sub_{sub_id}", TaskStatus.COMPLETED)
 
     def cancel_research(self):
         self._hide_loading()

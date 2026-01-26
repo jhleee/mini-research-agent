@@ -18,12 +18,17 @@ class MessageWidget(Static):
             MessageRole.SYSTEM: "[dim]#[/dim]",
             MessageRole.THINKING: "[yellow]...[/yellow]",
             MessageRole.TOOL: "[magenta]Tool:[/magenta]",
+            MessageRole.ERROR: "[bold red]Error:[/bold red]",
         }
         prefix = role_prefix.get(message.role, "")
         content = message.content
 
         if message.role == MessageRole.THINKING and len(content) > 100:
             content = content[:100] + "..."
+
+        # Wrap error content in red
+        if message.role == MessageRole.ERROR:
+            content = f"[red]{content}[/red]"
 
         super().__init__(f"{prefix} {content}", **kwargs)
         self.add_class("chat-message")
