@@ -38,6 +38,14 @@ class HierarchicalPlan(TypedDict):
     refinement_count: int      # Number of refinement iterations
 
 
+class DynamicQueryRequest(TypedDict):
+    """Request to generate dynamic follow-up queries based on search results."""
+    trigger_query: str           # The query that triggered replanning
+    extracted_items: list[str]   # Items extracted from search results (e.g., ["스파게티", "펜네", "라자냐"])
+    query_template: str          # Template for generating new queries (e.g., "{item} 핵심 재료")
+    purpose: str                 # Purpose of the follow-up queries
+
+
 class ResearchState(TypedDict):
     """State for the research agent."""
     # User's original query
@@ -76,3 +84,8 @@ class ResearchState(TypedDict):
 
     # Planning phase: intent_analysis, decomposition, validation, complete
     planning_phase: str
+
+    # Dynamic replanning fields
+    needs_replanning: bool                              # Flag indicating replanning is needed
+    pending_replan_request: Optional[DynamicQueryRequest]  # Pending dynamic query request
+    replan_count: int                                   # Number of replanning iterations
