@@ -78,6 +78,10 @@ async def call_mcp_tool(endpoint: str, tool_name: str, arguments: dict) -> dict:
 
 async def call_mcp_sse(endpoint: str, tool_name: str, arguments: dict) -> str:
     """Call MCP endpoint with SSE streaming support."""
+    # Check API key
+    if not OPENAI_API_KEY:
+        return "Error: API key not configured. Please set OPENAI_API_KEY in .env"
+
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
@@ -97,7 +101,11 @@ async def call_mcp_sse(endpoint: str, tool_name: str, arguments: dict) -> str:
     async with httpx.AsyncClient(timeout=120.0) as client:
         # Try streaming first
         async with client.stream("POST", endpoint, json=payload, headers=headers) as response:
-            if response.status_code != 200:
+            if response.status_code == 401:
+                return "Error: Invalid API key (401 Unauthorized)"
+            elif response.status_code == 403:
+                return "Error: API access forbidden (403 Forbidden)"
+            elif response.status_code != 200:
                 # Read error body
                 error_body = await response.aread()
                 return f"Error: HTTP {response.status_code} - {error_body.decode('utf-8', errors='replace')[:500]}"
@@ -115,6 +123,8 @@ async def call_mcp_sse(endpoint: str, tool_name: str, arguments: dict) -> str:
                                 parsed = json.loads(data)
                                 if "result" in parsed:
                                     result_content = extract_content(parsed["result"])
+                                elif "error" in parsed:
+                                    return f"Error: {parsed['error']}"
                             except json.JSONDecodeError:
                                 pass
                 return result_content or "No results"
@@ -122,6 +132,8 @@ async def call_mcp_sse(endpoint: str, tool_name: str, arguments: dict) -> str:
                 # Regular JSON
                 text = await response.aread()
                 data = json.loads(text)
+                if "error" in data:
+                    return f"Error: {data['error']}"
                 return extract_content(data.get("result", {}))
 
 
