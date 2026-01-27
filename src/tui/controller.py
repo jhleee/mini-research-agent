@@ -269,7 +269,9 @@ class ResearchController:
 
         for main_task in main_tasks:
             main_id = f"main_{main_task['id']}"
-            main_title = f"[{main_task['topic']}]"
+            # Use ● marker instead of [] to avoid Rich markup conflicts
+            topic = main_task['topic'][:35]
+            main_title = f"● {topic}"
             debug_log(f"Creating main task: {main_id} - {main_title}")
             self.create_task(main_id, main_title)
 
@@ -277,7 +279,7 @@ class ResearchController:
             for sub_task in main_task.get("sub_tasks", []):
                 sub_id = f"sub_{sub_task['id']}"
                 query = sub_task["query"]
-                sub_title = f"  ├─ {query[:40]}..." if len(query) > 40 else f"  ├─ {query}"
+                sub_title = f"  └ {query[:38]}" if len(query) <= 38 else f"  └ {query[:35]}..."
                 debug_log(f"Creating sub task: {sub_id} - {sub_title}")
                 self.create_task(sub_id, sub_title)
 

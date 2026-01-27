@@ -38,18 +38,26 @@ class MessageWidget(Static):
 class TaskWidget(Static):
     """A single task widget."""
 
+    STATUS_STYLES = {
+        TaskStatus.PENDING: ("[dim][  ][/dim]", "[dim]"),
+        TaskStatus.IN_PROGRESS: ("[yellow][..][/yellow]", "[yellow]"),
+        TaskStatus.COMPLETED: ("[green][*][/green]", "[green]"),
+    }
+
     def __init__(self, task: Task, **kwargs):
-        # Color-coded checkbox style based on status
-        status_styles = {
-            TaskStatus.PENDING: ("[dim][  ][/dim]", "[dim]"),
-            TaskStatus.IN_PROGRESS: ("[yellow][..][/yellow]", "[yellow]"),
-            TaskStatus.COMPLETED: ("[green][*][/green]", "[green]"),
-        }
-        icon, color = status_styles.get(task.status, ("[dim][  ][/dim]", "[dim]"))
-        content = f"{icon} {color}{task.title}[/]"
-        super().__init__(content, **kwargs)
+        super().__init__(self._format_task(task), **kwargs)
         self._task_data = task
         self.add_class("task-item")
+
+    def _format_task(self, task: Task) -> str:
+        """Format task content with status icon and color."""
+        icon, color = self.STATUS_STYLES.get(task.status, ("[dim][  ][/dim]", "[dim]"))
+        return f"{icon} {color}{task.title}[/]"
+
+    def update_task(self, task: Task):
+        """Update the widget with new task data in place."""
+        self._task_data = task
+        self.update(self._format_task(task))
 
 
 class LoadingWidget(Static):
@@ -129,23 +137,48 @@ class TaskPanel(Widget):
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="task-list")
 
+    def _sanitize_id(self, task_id: str) -> str:
+        """Convert task ID to valid Textual widget ID.
+
+        Textual IDs must contain only letters, numbers, underscores, or hyphens.
+        Replace dots with dashes.
+        """
+        return task_id.replace(".", "-")
+
     def add_task(self, task: Task):
         from .controller import debug_log
         try:
+            sanitized_id = self._sanitize_id(task.id)
             task_list = self.query_one("#task-list", VerticalScroll)
-            widget = TaskWidget(task, id=f"task-{task.id}")
+
+            # Check if widget already exists
+            try:
+                existing = task_list.query_one(f"#task-{sanitized_id}", TaskWidget)
+                # Widget exists, update it in place
+                existing.update_task(task)
+                debug_log(f"TaskPanel.add_task: updated existing {task.id}")
+                return
+            except Exception:
+                pass
+
+            # Widget doesn't exist, create new one
+            widget = TaskWidget(task, id=f"task-{sanitized_id}")
             task_list.mount(widget)
             debug_log(f"TaskPanel.add_task: mounted {task.id}")
         except Exception as e:
             debug_log(f"TaskPanel.add_task error: {e}")
 
     def update_task(self, task: Task):
+        """Update task in place without changing position."""
+        from .controller import debug_log
         try:
-            widget = self.query_one(f"#task-{task.id}", TaskWidget)
-            widget.remove()
+            sanitized_id = self._sanitize_id(task.id)
+            widget = self.query_one(f"#task-{sanitized_id}", TaskWidget)
+            widget.update_task(task)
+            debug_log(f"TaskPanel.update_task: updated {task.id}")
         except Exception:
-            pass
-        self.add_task(task)
+            # Widget doesn't exist yet, add it
+            self.add_task(task)
 
     def clear_tasks(self):
         try:

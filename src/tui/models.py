@@ -79,9 +79,11 @@ class AppState:
         return task
 
     def update_task_status(self, task_id: str, status: TaskStatus) -> Optional[Task]:
-        """Update a task's status."""
+        """Update a task's status. Returns task only if status actually changed."""
         for task in self.tasks:
             if task.id == task_id:
+                if task.status == status:
+                    return None  # No change, don't notify UI
                 task.status = status
                 if status == TaskStatus.COMPLETED:
                     task.completed_at = datetime.now()
