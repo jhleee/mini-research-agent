@@ -1,9 +1,20 @@
 """Web search and reader tools using Z.AI MCP endpoints via langchain-mcp-adapters."""
 import json
 from typing import Optional
+from functools import partial
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_core.tools import StructuredTool
 
 from .config import ZAI_API_KEY, WEB_SEARCH_ENDPOINT, WEB_READER_ENDPOINT
+
+# Default parameters for webReader
+WEB_READER_DEFAULTS = {
+    "return_format": "markdown",
+    "retain_images": False,
+    "no_gfm": False,
+    "with_images_summary": True,
+    "with_links_summary": True,
+}
 
 # Global MCP client instance
 _mcp_client: Optional[MultiServerMCPClient] = None
@@ -79,11 +90,41 @@ def extract_mcp_result(result) -> str:
 
 # Lazy-loaded tools - will be populated on first use
 TOOLS = []
+_original_web_reader = None
+
+
+def _create_wrapped_web_reader(original_tool):
+    """Create a wrapped webReader tool with default parameters."""
+    global _original_web_reader
+    _original_web_reader = original_tool
+
+    async def web_reader_with_defaults(url: str) -> list:
+        """Read and extract content from a webpage.
+
+        Args:
+            url: The URL of the webpage to read.
+
+        Returns:
+            The main content extracted from the webpage in markdown format.
+        """
+        # Build input with defaults
+        input_dict = {"url": url, **WEB_READER_DEFAULTS}
+        return await _original_web_reader.ainvoke(input_dict)
+
+    return StructuredTool.from_function(
+        coroutine=web_reader_with_defaults,
+        name="webReader",
+        description=original_tool.description,
+    )
 
 
 async def initialize_tools():
     """Initialize the tools list from MCP servers."""
     global TOOLS
     if not TOOLS:
-        TOOLS.extend(await get_mcp_tools())
+        mcp_tools = await get_mcp_tools()
+        for tool in mcp_tools:
+            if tool.name == "webReader":
+                tool = _create_wrapped_web_reader(tool)
+            TOOLS.append(tool)
     return TOOLS
