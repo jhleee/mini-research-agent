@@ -44,65 +44,81 @@ Write in a professional, informative style. Use markdown formatting for clarity.
 
 
 # Enhanced Planning Prompts for Hierarchical Task Decomposition
-INTENT_ANALYZER_PROMPT = """You are an intent analyzer for a research agent. Your job is to identify independent research topics within a user's query.
+INTENT_ANALYZER_PROMPT = """You are an intent analyzer for a research agent. Your job is to identify research steps within a user's query.
 
-Analyze the query and identify:
-1. How many distinct, independent research topics are present
-2. The main topic/theme for each independent request
-3. A brief description of what needs to be researched for each
+**CRITICAL RULE - DO NOT USE YOUR KNOWLEDGE:**
+- You must NOT assume or guess any facts from your training data
+- If a query asks "the 18th ranked country" or "top 3 items", you do NOT know what they are
+- The FIRST step must always be to SEARCH and DISCOVER unknown information
+
+**SEQUENTIAL DEPENDENCY DETECTION:**
+When a query has a pattern like:
+- "Find X, then find Y about X" → X must be discovered FIRST via search
+- "The country ranked Nth..." → You don't know which country, search first
+- "Top N items and their properties" → Find the N items first, then their properties
+
+Examples of SEQUENTIAL queries (need step-by-step):
+- "OECD GDP 18위 국가의 수도는?"
+  → Step 1: "OECD GDP 순위" (find which country is 18th)
+  → Step 2: Will be determined AFTER Step 1 results (capital of that country)
+  → Return ONLY Step 1 as the first topic
+
+- "가장 인기있는 프로그래밍 언어 3개의 장단점"
+  → Step 1: "인기 프로그래밍 언어 순위" (find top 3 first)
+  → Step 2: Will be determined AFTER Step 1 results
+  → Return ONLY Step 1 as the first topic
+
+**PARALLEL/INDEPENDENT topics (can be researched simultaneously):**
+- "AI 동향과 블록체인 전망" = 2 independent topics
+- "부산과 순천의 인구 비교" = 2 independent topics (both known entities)
 
 Rules:
-- Topics are INDEPENDENT if they can be researched separately and don't depend on each other's results
-- IMPORTANT: When a query lists multiple items connected by "and", "그리고", commas, or conjunctions, each item is likely a SEPARATE independent topic
-- **CRITICAL FOR COMPARISON QUERIES**: When a query asks to "compare A and B" or "A와 B를 비교", treat A and B as SEPARATE independent topics
-  - Example: "Compare Busan and Suncheon population" = 2 topics (Busan population, Suncheon population)
-  - Example: "부산과 순천의 인구 수를 비교해라" = 2 topics (부산 인구, 순천 인구)
-  - The comparison/synthesis will happen automatically later - just focus on identifying the separate entities
-- Example: "AI trends and quantum computing developments" = 2 independent topics (AI trends, quantum computing)
-- Example: "AI 동향과 블록체인 전망" = 2 independent topics (AI 동향, 블록체인 전망)
-- Example: "AI, quantum computing, blockchain trends" = 3 independent topics
-- Example: "How AI is applied in healthcare diagnosis" = 1 topic (AI application in specific domain)
+- For SEQUENTIAL queries: Return ONLY the first discovery step as a single topic
+- For PARALLEL queries: Return all independent topics
 - Maximum 4 main topics per query
-- If query is simple/single-topic, return just 1 main topic
-- Each topic name should be SHORT and FOCUSED on a single subject area (e.g., "AI 최신 동향", "양자컴퓨팅 발전", "블록체인 전망", "부산 인구", "순천 인구")
+- DO NOT fill in unknown values - they must be searched
 - Respond in the same language as the user's query
 
 Output ONLY valid JSON in this exact format:
 {{
-    "analysis": "Brief explanation of your analysis",
+    "analysis": "Brief explanation - is this sequential or parallel?",
+    "is_sequential": true/false,
     "intent_count": <number>,
     "main_topics": [
         {{
             "topic": "Short topic name (max 30 chars)",
-            "description": "What needs to be researched about this topic"
+            "description": "What needs to be searched/discovered"
         }}
     ]
 }}"""
 
-TASK_DECOMPOSER_PROMPT = """You are a research task decomposer. Given a main research topic, break it down into specific search queries.
+TASK_DECOMPOSER_PROMPT = """You are a research task decomposer. Given a main research topic, create specific search queries.
 
 Main Topic: {topic}
 Description: {description}
 Original User Query Context: {original_query}
 
-Create 2-4 specific search queries that will comprehensively cover THIS TOPIC ONLY.
+**CRITICAL - DO NOT USE YOUR KNOWLEDGE:**
+- You must NOT assume or fill in any unknown information
+- If the topic is about finding "which country/item/person", create a DISCOVERY query
+- Do NOT guess the answer - the search will reveal it
 
-CRITICAL RULES:
-- Each query must focus ONLY on "{topic}" - do NOT include other topics from the original query
+Create 1-3 specific search queries for THIS TOPIC ONLY.
+
+RULES:
 - Keep queries SHORT and FOCUSED (ideally 3-6 words)
-- Do NOT combine multiple unrelated subjects in one query
-- Each query should cover a DIFFERENT ASPECT of this single topic
+- For discovery tasks (finding unknown X): Create queries to FIND X, not about X
 - Be in the same language as the original query
 - Be suitable for web search engines
 
-BAD examples (mixing topics):
-- "AI 동향 양자컴퓨팅 블록체인" (mixing 3 topics)
-- "AI trends quantum computing blockchain" (mixing 3 topics)
+Examples:
+- Topic "OECD GDP 순위 확인":
+  GOOD: "OECD 국가 GDP 순위 2024"
+  BAD: "한국 GDP 순위" (assumes Korea without searching)
 
-GOOD examples (focused on single topic):
-- For "AI 최신 동향": "AI 최신 동향 2025", "생성형 AI 트렌드", "AI 산업 적용 사례"
-- For "양자컴퓨팅": "양자컴퓨팅 최신 발전", "양자컴퓨터 상용화 현황"
-- For "블록체인": "블록체인 기술 전망 2025", "블록체인 실제 활용 사례"
+- Topic "인기 프로그래밍 언어 찾기":
+  GOOD: "프로그래밍 언어 인기 순위 2024"
+  BAD: "Python JavaScript 비교" (assumes specific languages)
 
 Output ONLY valid JSON in this exact format:
 {{
@@ -153,41 +169,54 @@ Respond in the same language as the original query."""
 
 
 # Dynamic Replanning Prompts
-REPLAN_ANALYZER_PROMPT = """You are a research planning analyzer. Analyze whether the current search results require dynamic follow-up queries.
+REPLAN_ANALYZER_PROMPT = """You are a research planning analyzer. Analyze search results to determine the NEXT research step.
 
 Original User Query: {original_query}
 Current Search Query: {current_query}
-Search Results Summary:
+Search Results:
 {search_results}
 
-Determine if:
-1. The user's query requires finding specific items/examples first, then researching each one
-2. The search results contain specific items that need individual follow-up research
-3. There's a pattern like "find X things, then research each"
+**YOUR TASK: Extract discovered information and plan the next step**
 
-Examples of queries that need dynamic replanning:
-- "파스타 종류 3가지를 찾아서, 각 파스타의 핵심 재료를 검색해줘"
-  → First find 3 pasta types, then search for ingredients of each
-- "Find 5 popular programming languages and compare their pros/cons"
-  → First find 5 languages, then research each one's pros/cons
-- "Top 3 electric cars and their battery specifications"
-  → First find 3 cars, then search specs for each
+The original query may have required discovering something first. Now that we have search results:
+1. What specific information was discovered? (e.g., "18th ranked country is Turkey")
+2. What is the NEXT step based on the original query?
 
-If dynamic replanning is needed, extract the items found and define the follow-up query template.
+Examples:
+
+Example 1 - Sequential discovery:
+- Original: "OECD GDP 18위 국가의 수도는?"
+- Current search: "OECD GDP 순위"
+- Results mention: "...18위 터키..."
+- → Extract: "터키" (the discovered 18th country)
+- → Next step: Search for "터키 수도"
+
+Example 2 - Multiple items to research:
+- Original: "인기 프로그래밍 언어 3개의 장단점"
+- Current search: "프로그래밍 언어 인기 순위"
+- Results mention: "1위 Python, 2위 JavaScript, 3위 Java"
+- → Extract: ["Python", "JavaScript", "Java"]
+- → Next step: Search pros/cons for each
+
+Example 3 - No follow-up needed:
+- Original: "Python이란?"
+- Current search: "Python 프로그래밍"
+- Results contain the answer directly
+- → No replanning needed
 
 Output ONLY valid JSON:
 {{
     "needs_replanning": true/false,
-    "reason": "Brief explanation",
-    "extracted_items": ["item1", "item2", "item3"],  // Items found that need follow-up
-    "query_template": "{{item}} follow-up query pattern",  // Use {{item}} as placeholder
-    "purpose": "What the follow-up queries will research"
+    "reason": "What was discovered and why follow-up is needed",
+    "extracted_items": ["discovered item 1", "discovered item 2"],
+    "query_template": "{{item}} + what to search next",
+    "purpose": "What the follow-up will answer"
 }}
 
-If needs_replanning is false, still output valid JSON with empty arrays:
+If no follow-up needed:
 {{
     "needs_replanning": false,
-    "reason": "Query doesn't require dynamic follow-up",
+    "reason": "Original query is answered / no sequential dependency",
     "extracted_items": [],
     "query_template": "",
     "purpose": ""
