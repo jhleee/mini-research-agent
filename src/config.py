@@ -22,3 +22,7 @@ MAX_MAIN_TASKS = 4       # Maximum independent topics from intent analysis
 MAX_SUB_TASKS = 4        # Maximum queries per main task
 MAX_REFINEMENTS = 1      # Maximum plan refinement iterations
 VALIDATION_THRESHOLD = 0.7  # Confidence threshold for plan validation
+
+# Dynamic Replanning Configuration
+MAX_REPLANS = 3          # Maximum dynamic replanning iterations per research session
+MAX_DYNAMIC_ITEMS = 5    # Maximum items to extract for follow-up queries

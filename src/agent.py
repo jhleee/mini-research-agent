@@ -10,7 +10,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
 from .config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, MAX_ITERATIONS
-from .state import ResearchState, HierarchicalPlan, MainTask, SubTask, TaskStatus
+from .state import ResearchState, HierarchicalPlan, MainTask, SubTask, TaskStatus, DynamicQueryRequest
 from .tools import TOOLS
 from .prompts import (
     PLANNER_PROMPT,
@@ -20,7 +20,10 @@ from .prompts import (
     TASK_DECOMPOSER_PROMPT,
     PLAN_VALIDATOR_PROMPT,
     HIERARCHICAL_SYNTHESIZER_PROMPT,
+    REPLAN_ANALYZER_PROMPT,
+    DYNAMIC_QUERY_GENERATOR_PROMPT,
 )
+from .config import MAX_ITERATIONS, MAX_REPLANS
 
 
 def create_llm():
@@ -290,6 +293,147 @@ def refine_plan(
             plan["main_tasks"][0]["sub_tasks"].append(new_sub_task)
 
     plan["refinement_count"] += 1
+    return plan
+
+
+def analyze_for_replanning(
+    original_query: str,
+    current_query: str,
+    search_results: str,
+    llm: ChatOpenAI
+) -> Optional[DynamicQueryRequest]:
+    """Analyze search results to determine if dynamic replanning is needed.
+
+    Returns a DynamicQueryRequest if replanning is needed, None otherwise.
+    """
+    prompt = REPLAN_ANALYZER_PROMPT.format(
+        original_query=original_query,
+        current_query=current_query,
+        search_results=search_results[:3000]  # Limit context size
+    )
+
+    messages = [
+        SystemMessage(content=prompt),
+        HumanMessage(content="Analyze these search results for dynamic replanning needs.")
+    ]
+
+    try:
+        response = llm.invoke(messages)
+        result = parse_json_response(response.content)
+
+        if not isinstance(result, dict):
+            return None
+
+        if not result.get("needs_replanning", False):
+            return None
+
+        extracted_items = result.get("extracted_items", [])
+        if not extracted_items or not isinstance(extracted_items, list):
+            return None
+
+        # Limit items to MAX_DYNAMIC_ITEMS
+        from .config import MAX_DYNAMIC_ITEMS
+        extracted_items = extracted_items[:MAX_DYNAMIC_ITEMS]
+
+        return {
+            "trigger_query": current_query,
+            "extracted_items": extracted_items,
+            "query_template": str(result.get("query_template", "")),
+            "purpose": str(result.get("purpose", ""))
+        }
+
+    except Exception:
+        return None
+
+
+def generate_dynamic_queries(
+    original_query: str,
+    replan_request: DynamicQueryRequest,
+    llm: ChatOpenAI
+) -> list[Dict[str, str]]:
+    """Generate specific search queries for each extracted item."""
+    prompt = DYNAMIC_QUERY_GENERATOR_PROMPT.format(
+        original_query=original_query,
+        items=", ".join(replan_request["extracted_items"]),
+        purpose=replan_request["purpose"],
+        template=replan_request["query_template"]
+    )
+
+    messages = [
+        SystemMessage(content=prompt),
+        HumanMessage(content="Generate follow-up search queries for each item.")
+    ]
+
+    try:
+        response = llm.invoke(messages)
+        result = parse_json_response(response.content)
+
+        if not isinstance(result, dict):
+            # Fallback: generate queries from template
+            return [
+                {
+                    "item": item,
+                    "query": replan_request["query_template"].replace("{item}", item),
+                    "purpose": replan_request["purpose"]
+                }
+                for item in replan_request["extracted_items"]
+            ]
+
+        queries = result.get("queries", [])
+        if not queries or not isinstance(queries, list):
+            # Fallback
+            return [
+                {
+                    "item": item,
+                    "query": replan_request["query_template"].replace("{item}", item),
+                    "purpose": replan_request["purpose"]
+                }
+                for item in replan_request["extracted_items"]
+            ]
+
+        return queries
+
+    except Exception:
+        # Fallback: generate queries from template
+        return [
+            {
+                "item": item,
+                "query": replan_request["query_template"].replace("{item}", item),
+                "purpose": replan_request["purpose"]
+            }
+            for item in replan_request["extracted_items"]
+        ]
+
+
+def add_dynamic_tasks_to_plan(
+    plan: HierarchicalPlan,
+    dynamic_queries: list[Dict[str, str]],
+    parent_main_task_id: str
+) -> HierarchicalPlan:
+    """Add dynamically generated queries as new sub-tasks to the plan."""
+    plan = copy.deepcopy(plan)
+
+    # Find the parent main task
+    for main_task in plan["main_tasks"]:
+        if main_task["id"] == parent_main_task_id:
+            # Get the next sub-task ID
+            existing_count = len(main_task["sub_tasks"])
+
+            for idx, query_info in enumerate(dynamic_queries, start=1):
+                new_sub_task: SubTask = {
+                    "id": f"{parent_main_task_id}.{existing_count + idx}",
+                    "query": str(query_info.get("query", ""))[:200],
+                    "status": TaskStatus.PENDING.value,
+                    "findings": []
+                }
+                main_task["sub_tasks"].append(new_sub_task)
+
+            # Reset main task status to in_progress if it was completed
+            if main_task["status"] == TaskStatus.COMPLETED.value:
+                main_task["status"] = TaskStatus.IN_PROGRESS.value
+
+            break
+
     return plan
 
 
@@ -573,8 +717,70 @@ def get_next_pending_task(plan: Optional[HierarchicalPlan]) -> Tuple[Optional[st
     return None, None  # All tasks complete
 
 
+def replan_node(state: ResearchState) -> dict:
+    """Process dynamic replanning request and add new sub-tasks to the plan.
+
+    This node is called when search results indicate that follow-up queries
+    are needed based on discovered items (e.g., "find 3 pasta types" → search each).
+    """
+    llm = create_llm()
+    replan_request = state.get("pending_replan_request")
+    plan = state.get("hierarchical_plan")
+    current_main_id = state.get("current_main_task_id")
+
+    if not replan_request or not plan:
+        return {
+            "needs_replanning": False,
+            "pending_replan_request": None,
+        }
+
+    # Use the current main task ID or default to "1"
+    target_main_id = current_main_id or "1"
+
+    # Generate dynamic queries for extracted items
+    dynamic_queries = generate_dynamic_queries(
+        state["query"],
+        replan_request,
+        llm
+    )
+
+    if not dynamic_queries:
+        return {
+            "needs_replanning": False,
+            "pending_replan_request": None,
+        }
+
+    # Add dynamic queries as new sub-tasks
+    updated_plan = add_dynamic_tasks_to_plan(
+        plan,
+        dynamic_queries,
+        target_main_id
+    )
+
+    # Update flat plan for backward compatibility
+    flat_plan = state.get("research_plan", [])[:]
+    for query_info in dynamic_queries:
+        query = query_info.get("query", "")
+        if query and query not in flat_plan:
+            flat_plan.append(query)
+
+    # Get the first new pending task
+    next_main_id, next_sub_id = get_next_pending_task(updated_plan)
+
+    return {
+        "hierarchical_plan": updated_plan,
+        "research_plan": flat_plan,
+        "current_main_task_id": next_main_id,
+        "current_sub_task_id": next_sub_id,
+        "needs_replanning": False,
+        "pending_replan_request": None,
+        "replan_count": state.get("replan_count", 0) + 1,
+        "messages": [AIMessage(content=f"Dynamic replanning: Added {len(dynamic_queries)} follow-up queries for items: {', '.join(replan_request['extracted_items'])}")],
+    }
+
+
 def process_tool_results(state: ResearchState) -> dict:
-    """Process tool results, track findings per task, and advance to next task."""
+    """Process tool results, track findings per task, check for replanning needs, and advance to next task."""
     messages = state.get("messages", [])
     plan = state.get("hierarchical_plan")
     current_main_id = state.get("current_main_task_id")
@@ -583,6 +789,7 @@ def process_tool_results(state: ResearchState) -> dict:
     # Look for tool results in recent messages
     new_findings = []
     new_urls = list(state.get("read_urls", []))
+    search_results_content = ""
 
     for msg in messages[-5:]:
         if hasattr(msg, "content") and isinstance(msg.content, str):
@@ -594,11 +801,43 @@ def process_tool_results(state: ResearchState) -> dict:
                 summary = content[:500] + "..." if len(content) > 500 else content
                 if summary not in state.get("findings", []):
                     new_findings.append(summary)
+                # Accumulate for replanning analysis
+                search_results_content += content + "\n"
 
     # Update hierarchical plan with findings if available
     updated_plan = plan
     if plan and current_main_id and current_sub_id and new_findings:
         updated_plan = update_plan_findings(plan, current_main_id, current_sub_id, new_findings)
+
+    # Check if dynamic replanning is needed (only if we haven't exceeded replan limit)
+    needs_replanning = False
+    pending_replan_request = None
+    replan_count = state.get("replan_count", 0)
+
+    # Find current query for replanning analysis
+    current_query = None
+    if plan and current_main_id and current_sub_id:
+        current_query, _ = find_current_task(plan, current_main_id, current_sub_id)
+
+    # Only attempt replanning if:
+    # 1. We have search results
+    # 2. We haven't exceeded the replan limit
+    # 3. We're on the first sub-task (typically the discovery phase)
+    if (search_results_content and
+        replan_count < MAX_REPLANS and
+        current_sub_id and current_sub_id.endswith(".1")):  # First sub-task of a main task
+
+        llm = create_llm()
+        replan_request = analyze_for_replanning(
+            state["query"],
+            current_query or "",
+            search_results_content,
+            llm
+        )
+
+        if replan_request:
+            needs_replanning = True
+            pending_replan_request = replan_request
 
     # Advance to next sub-task
     next_main_id, next_sub_id = get_next_pending_task(updated_plan)
@@ -609,6 +848,8 @@ def process_tool_results(state: ResearchState) -> dict:
         "hierarchical_plan": updated_plan,
         "current_main_task_id": next_main_id,
         "current_sub_task_id": next_sub_id,
+        "needs_replanning": needs_replanning,
+        "pending_replan_request": pending_replan_request,
     }
 
 
@@ -693,8 +934,17 @@ def should_continue(state: ResearchState) -> Literal["research", "tools", "synth
     return "research"
 
 
+def should_continue_after_process(state: ResearchState) -> Literal["research", "replan"]:
+    """Determine whether to continue research or do dynamic replanning."""
+    # Check if dynamic replanning is needed
+    if state.get("needs_replanning", False) and state.get("pending_replan_request"):
+        return "replan"
+
+    return "research"
+
+
 def create_research_graph():
-    """Create the research agent graph."""
+    """Create the research agent graph with dynamic replanning support."""
     # Create the graph
     graph = StateGraph(ResearchState)
 
@@ -703,6 +953,7 @@ def create_research_graph():
     graph.add_node("research", research_node)
     graph.add_node("tools", ToolNode(TOOLS))
     graph.add_node("process_results", process_tool_results)
+    graph.add_node("replan", replan_node)  # New: dynamic replanning node
     graph.add_node("synthesize", synthesize_node)
 
     # Set entry point
@@ -723,9 +974,21 @@ def create_research_graph():
         }
     )
 
-    # After tools, process results and continue research
+    # After tools, process results
     graph.add_edge("tools", "process_results")
-    graph.add_edge("process_results", "research")
+
+    # After processing results, decide: replan or continue research
+    graph.add_conditional_edges(
+        "process_results",
+        should_continue_after_process,
+        {
+            "research": "research",
+            "replan": "replan",
+        }
+    )
+
+    # After replanning, continue with research
+    graph.add_edge("replan", "research")
 
     # Synthesize leads to end
     graph.add_edge("synthesize", END)
@@ -759,6 +1022,10 @@ async def run_research_with_tools(query: str, callback=None, config={ "recursion
         "report": "",
         "status": "planning",
         "planning_phase": "intent_analysis",
+        # Dynamic replanning fields
+        "needs_replanning": False,
+        "pending_replan_request": None,
+        "replan_count": 0,
     }
 
     def emit(event_type: str, data: dict):
@@ -781,6 +1048,7 @@ async def run_research_with_tools(query: str, callback=None, config={ "recursion
             llm_nodes = {
                 "plan": "Planning research",
                 "research": "Analyzing",
+                "replan": "Dynamic replanning",
                 "synthesize": "Writing report",
             }
             if node_name in llm_nodes:
@@ -812,6 +1080,23 @@ async def run_research_with_tools(query: str, callback=None, config={ "recursion
                                 flat_queries.append(st["query"])
                         emit("plan_created", {"queries": flat_queries})
                         plan_emitted = True
+
+                # Emit dynamic replanning event when plan is updated
+                if node_name == "replan":
+                    replan_request = node_state.get("pending_replan_request")
+                    h_plan = node_state.get("hierarchical_plan")
+                    if h_plan:
+                        # Emit updated plan with dynamic tasks
+                        emit("dynamic_replan", {
+                            "replan_count": node_state.get("replan_count", 0),
+                            "extracted_items": replan_request.get("extracted_items", []) if replan_request else [],
+                            "new_queries": [
+                                st["query"]
+                                for mt in h_plan["main_tasks"]
+                                for st in mt["sub_tasks"]
+                                if st["status"] == TaskStatus.PENDING.value
+                            ]
+                        })
 
                 # Emit task progress updates when task changes
                 current_main = node_state.get("current_main_task_id")

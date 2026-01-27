@@ -150,3 +150,67 @@ Based on the findings for each topic, create a well-structured report that:
 
 Use markdown formatting. Write in a professional, informative style.
 Respond in the same language as the original query."""
+
+
+# Dynamic Replanning Prompts
+REPLAN_ANALYZER_PROMPT = """You are a research planning analyzer. Analyze whether the current search results require dynamic follow-up queries.
+
+Original User Query: {original_query}
+Current Search Query: {current_query}
+Search Results Summary:
+{search_results}
+
+Determine if:
+1. The user's query requires finding specific items/examples first, then researching each one
+2. The search results contain specific items that need individual follow-up research
+3. There's a pattern like "find X things, then research each"
+
+Examples of queries that need dynamic replanning:
+- "파스타 종류 3가지를 찾아서, 각 파스타의 핵심 재료를 검색해줘"
+  → First find 3 pasta types, then search for ingredients of each
+- "Find 5 popular programming languages and compare their pros/cons"
+  → First find 5 languages, then research each one's pros/cons
+- "Top 3 electric cars and their battery specifications"
+  → First find 3 cars, then search specs for each
+
+If dynamic replanning is needed, extract the items found and define the follow-up query template.
+
+Output ONLY valid JSON:
+{{
+    "needs_replanning": true/false,
+    "reason": "Brief explanation",
+    "extracted_items": ["item1", "item2", "item3"],  // Items found that need follow-up
+    "query_template": "{{item}} follow-up query pattern",  // Use {{item}} as placeholder
+    "purpose": "What the follow-up queries will research"
+}}
+
+If needs_replanning is false, still output valid JSON with empty arrays:
+{{
+    "needs_replanning": false,
+    "reason": "Query doesn't require dynamic follow-up",
+    "extracted_items": [],
+    "query_template": "",
+    "purpose": ""
+}}"""
+
+
+DYNAMIC_QUERY_GENERATOR_PROMPT = """You are generating follow-up search queries based on discovered items.
+
+Original Query: {original_query}
+Discovered Items: {items}
+Query Purpose: {purpose}
+Query Template: {template}
+
+Generate specific search queries for EACH discovered item.
+Each query should be focused and suitable for web search.
+
+Output ONLY valid JSON:
+{{
+    "queries": [
+        {{
+            "item": "The specific item",
+            "query": "The search query for this item",
+            "purpose": "What this will discover"
+        }}
+    ]
+}}"""
