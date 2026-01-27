@@ -11,7 +11,7 @@ from langgraph.prebuilt import ToolNode
 
 from .config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, MAX_ITERATIONS
 from .state import ResearchState, HierarchicalPlan, MainTask, SubTask, TaskStatus, DynamicQueryRequest
-from .tools import TOOLS
+from .tools import initialize_tools
 from .prompts import (
     PLANNER_PROMPT,
     RESEARCHER_PROMPT,
@@ -613,9 +613,9 @@ def find_current_task(
     return None, None
 
 
-def research_node(state: ResearchState) -> dict:
+def research_node(state: ResearchState, tools: list = None) -> dict:
     """Execute research using tools, with hierarchical task awareness."""
-    llm = create_llm().bind_tools(TOOLS)
+    llm = create_llm().bind_tools(tools or [])
 
     # Get current task context from hierarchical plan
     plan = state.get("hierarchical_plan")
@@ -943,15 +943,15 @@ def should_continue_after_process(state: ResearchState) -> Literal["research", "
     return "research"
 
 
-def create_research_graph():
+def create_research_graph(tools: list):
     """Create the research agent graph with dynamic replanning support."""
     # Create the graph
     graph = StateGraph(ResearchState)
 
     # Add nodes
     graph.add_node("plan", plan_node)
-    graph.add_node("research", research_node)
-    graph.add_node("tools", ToolNode(TOOLS))
+    graph.add_node("research", lambda state: research_node(state, tools))
+    graph.add_node("tools", ToolNode(tools))
     graph.add_node("process_results", process_tool_results)
     graph.add_node("replan", replan_node)  # New: dynamic replanning node
     graph.add_node("synthesize", synthesize_node)
@@ -1006,7 +1006,9 @@ async def run_research_with_tools(query: str, callback=None, config={ "recursion
     Returns:
         The final research report.
     """
-    graph = create_research_graph()
+    # Initialize MCP tools
+    tools = await initialize_tools()
+    graph = create_research_graph(tools)
 
     initial_state = {
         "query": query,

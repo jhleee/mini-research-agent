@@ -242,10 +242,10 @@ class ResearchController:
     def _handle_tool_call(self, tool_name: str, args: dict):
         self._hide_loading()
         # Build call text
-        if tool_name == "zai-web-search":
-            query = args.get("query", "")
+        if tool_name == "webSearchPrime":
+            query = args.get("search_query", "")
             call_text = f"Searching: {query}"
-        elif tool_name == "read_webpage":
+        elif tool_name == "webReader":
             url = args.get("url", "")
             short_url = url[:60] + "..." if len(url) > 60 else url
             call_text = f"Reading: {short_url}"
@@ -260,23 +260,32 @@ class ResearchController:
         else:
             self.add_tool_message(call_text)
 
-    def _handle_tool_result(self, tool_name: str, result: str):
-        debug_log(f"_handle_tool_result called: tool={tool_name}, result={result[:100] if result else 'None'}...")
+    def _handle_tool_result(self, tool_name: str, result):
+        # Convert list result to string (MCP tools return list of content items)
+        if isinstance(result, list):
+            texts = []
+            for item in result:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    texts.append(item.get("text", ""))
+            result = " ".join(texts) if texts else str(result)
+
+        result_str = str(result) if result else ""
+        debug_log(f"_handle_tool_result called: tool={tool_name}, result={result_str[:100] if result_str else 'None'}...")
         self._hide_loading()
 
         # Determine result text and error status
         is_error = False
-        if result is None:
+        if not result_str:
             result_text = "(no response)"
-        elif not result or not result.strip():
+        elif not result_str.strip():
             result_text = "(empty)"
         else:
-            result_lower = result.lower()
+            result_lower = result_str.lower()
             if "error" in result_lower or "failed" in result_lower or "exception" in result_lower:
                 is_error = True
-                result_text = result[:200] + "..." if len(result) > 200 else result
+                result_text = result_str[:200] + "..." if len(result_str) > 200 else result_str
             else:
-                result_text = result[:150] + "..." if len(result) > 150 else result
+                result_text = result_str[:150] + "..." if len(result_str) > 150 else result_str
             result_text = result_text.replace("\n", " ")
 
         # Use new callback to update tool widget

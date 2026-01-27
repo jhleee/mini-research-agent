@@ -1,207 +1,89 @@
-"""Web search and reader tools using Z.AI MCP endpoints."""
-import httpx
+"""Web search and reader tools using Z.AI MCP endpoints via langchain-mcp-adapters."""
 import json
-from typing import Any
-from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from typing import Optional
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from .config import ZAI_API_KEY, WEB_SEARCH_ENDPOINT, WEB_READER_ENDPOINT
 
-
-class SearchResult(BaseModel):
-    """Search result schema."""
-    title: str
-    url: str
-    snippet: str
-    site_name: str = ""
+# Global MCP client instance
+_mcp_client: Optional[MultiServerMCPClient] = None
+_tools_cache: Optional[list] = None
 
 
-class WebContent(BaseModel):
-    """Web content schema."""
-    title: str
-    url: str
-    content: str
-    links: list[str] = Field(default_factory=list)
+def _get_mcp_client() -> MultiServerMCPClient:
+    """Get or create the MCP client singleton."""
+    global _mcp_client
+    if _mcp_client is None:
+        _mcp_client = MultiServerMCPClient({
+            'zai-search': {
+                'transport': 'streamable_http',
+                'url': WEB_SEARCH_ENDPOINT,
+                'headers': {
+                    'Authorization': f'Bearer {ZAI_API_KEY}'
+                }
+            },
+            'zai-reader': {
+                'transport': 'streamable_http',
+                'url': WEB_READER_ENDPOINT,
+                'headers': {
+                    'Authorization': f'Bearer {ZAI_API_KEY}'
+                }
+            }
+        })
+    return _mcp_client
 
 
-async def call_mcp_tool(endpoint: str, tool_name: str, arguments: dict) -> dict:
-    """Call an MCP tool endpoint using Streamable HTTP."""
-    headers = {
-        "Authorization": f"Bearer {ZAI_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
-
-    # MCP JSON-RPC format
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": arguments
-        }
-    }
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(endpoint, json=payload, headers=headers)
-
-        # Check if SSE response
-        content_type = response.headers.get("content-type", "")
-
-        if "text/event-stream" in content_type:
-            # Parse SSE response
-            result = None
-            for line in response.text.split("\n"):
-                if line.startswith("data:"):
-                    data = line[5:].strip()
-                    if data:
-                        try:
-                            parsed = json.loads(data)
-                            if "result" in parsed:
-                                result = parsed["result"]
-                            elif "error" in parsed:
-                                raise Exception(f"MCP Error: {parsed['error']}")
-                        except json.JSONDecodeError:
-                            pass
-            return result or {}
-        else:
-            # Regular JSON response
-            response.raise_for_status()
-            result = response.json()
-
-            if "error" in result:
-                raise Exception(f"MCP Error: {result['error']}")
-
-            return result.get("result", {})
+async def get_mcp_tools() -> list:
+    """Get all MCP tools from Z.AI servers."""
+    global _tools_cache
+    if _tools_cache is None:
+        client = _get_mcp_client()
+        _tools_cache = await client.get_tools()
+    return _tools_cache
 
 
-async def call_mcp_sse(endpoint: str, tool_name: str, arguments: dict) -> str:
-    """Call MCP endpoint with SSE streaming support."""
-    # Check API key
-    if not ZAI_API_KEY:
-        return "Error: API key not configured. Please set ZAI_API_KEY in .env"
-
-    headers = {
-        "Authorization": f"Bearer {ZAI_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
-
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": arguments
-        }
-    }
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        # Try streaming first
-        async with client.stream("POST", endpoint, json=payload, headers=headers) as response:
-            if response.status_code == 401:
-                return "Error: Invalid API key (401 Unauthorized)"
-            elif response.status_code == 403:
-                return "Error: API access forbidden (403 Forbidden)"
-            elif response.status_code != 200:
-                # Read error body
-                error_body = await response.aread()
-                return f"Error: HTTP {response.status_code} - {error_body.decode('utf-8', errors='replace')[:500]}"
-
-            content_type = response.headers.get("content-type", "")
-
-            if "text/event-stream" in content_type:
-                # SSE streaming
-                result_content = ""
-                async for line in response.aiter_lines():
-                    if line.startswith("data:"):
-                        data = line[5:].strip()
-                        if data:
-                            try:
-                                parsed = json.loads(data)
-                                if "result" in parsed:
-                                    result_content = extract_content(parsed["result"])
-                                elif "error" in parsed:
-                                    return f"Error: {parsed['error']}"
-                            except json.JSONDecodeError:
-                                pass
-                return result_content or "No results"
-            else:
-                # Regular JSON
-                text = await response.aread()
-                data = json.loads(text)
-                if "error" in data:
-                    return f"Error: {data['error']}"
-                return extract_content(data.get("result", {}))
-
-
-def extract_content(result: dict) -> str:
-    """Extract text content from MCP result."""
-    if not result:
+def extract_mcp_result(result) -> str:
+    """Extract text content from MCP tool result."""
+    if result is None:
         return "No results found."
 
-    content = result.get("content", [])
-    if not content:
-        return str(result) if result else "No results found."
+    # Result is typically a list of content items
+    if isinstance(result, list):
+        texts = []
+        for item in result:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text", "")
+                # Try to parse as JSON for structured results
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        # Format search results
+                        formatted = []
+                        for r in parsed[:10]:  # Limit to 10 results
+                            title = r.get("title", "")
+                            link = r.get("link", "")
+                            content = r.get("content", "")
+                            formatted.append(f"- {title}\n  {link}\n  {content[:200]}")
+                        texts.append("\n\n".join(formatted))
+                    else:
+                        texts.append(str(parsed))
+                except (json.JSONDecodeError, TypeError):
+                    texts.append(text)
+        return "\n".join(texts) if texts else "No results found."
 
-    # Extract text content
-    for item in content:
-        if isinstance(item, dict) and item.get("type") == "text":
-            return item.get("text", "")
+    if isinstance(result, str):
+        return result
 
     return str(result)
 
 
-@tool(name="zai-web-search")
-async def zai_web_search(query: str) -> str:
-    """Search the web using Z.AI MCP service.
-
-    Args:
-        query: The search query to look up on the web.
-
-    Returns:
-        Search results with titles, URLs, and snippets.
-    """
-    try:
-        result = await call_mcp_sse(
-            WEB_SEARCH_ENDPOINT,
-            "webSearchPrime",
-            {"query": query}
-        )
-        return result if result else "No search results found."
-
-    except Exception as e:
-        return f"Search error: {str(e)}"
+# Lazy-loaded tools - will be populated on first use
+TOOLS = []
 
 
-@tool
-async def read_webpage(url: str) -> str:
-    """Read and extract content from a webpage.
-
-    Args:
-        url: The URL of the webpage to read.
-
-    Returns:
-        The main content extracted from the webpage.
-    """
-    try:
-        result = await call_mcp_sse(
-            WEB_READER_ENDPOINT,
-            "webReader",
-            {"url": url}
-        )
-
-        # Truncate if too long
-        if result and len(result) > 8000:
-            result = result[:8000] + "\n\n[Content truncated...]"
-
-        return result if result else "Could not read webpage content."
-
-    except Exception as e:
-        return f"Read error: {str(e)}"
-
-
-# Tool list for the agent
-TOOLS = [zai_web_search, read_webpage]
+async def initialize_tools():
+    """Initialize the tools list from MCP servers."""
+    global TOOLS
+    if not TOOLS:
+        TOOLS.extend(await get_mcp_tools())
+    return TOOLS

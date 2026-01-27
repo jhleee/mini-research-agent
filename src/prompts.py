@@ -20,12 +20,12 @@ Aim for 3-5 search queries that together will provide comprehensive coverage of 
 RESEARCHER_PROMPT = """You are a research assistant with access to web search and webpage reading tools.
 
 Your task is to gather information to answer the research query. You have these tools:
-- web_search: Search the web for information
-- read_webpage: Read the full content of a specific URL
+- webSearchPrime: Search the web for information. Use parameter: search_query
+- webReader: Read the full content of a specific URL. Use parameter: url
 
 Strategy:
-1. Use web_search to find relevant sources
-2. Use read_webpage to get detailed content from promising URLs
+1. Use webSearchPrime to find relevant sources
+2. Use webReader to get detailed content from promising URLs (use clean URLs without encoding)
 3. Focus on gathering facts, data, and expert opinions
 
 Be thorough but efficient. Don't read too many pages - focus on the most relevant ones.
