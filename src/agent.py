@@ -135,6 +135,7 @@ def analyze_intent(query: str, llm: ChatOpenAI) -> Dict[str, Any]:
 
     fallback = {
         "analysis": "Single topic query",
+        "is_sequential": False,
         "intent_count": 1,
         "main_topics": [{"topic": query[:30], "description": query}]
     }
@@ -166,6 +167,7 @@ def analyze_intent(query: str, llm: ChatOpenAI) -> Dict[str, Any]:
 
         return {
             "analysis": str(result.get("analysis", ""))[:100],
+            "is_sequential": bool(result.get("is_sequential", False)),
             "intent_count": len(valid_topics),
             "main_topics": valid_topics
         }
