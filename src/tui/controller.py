@@ -242,7 +242,7 @@ class ResearchController:
     def _handle_tool_call(self, tool_name: str, args: dict):
         self._hide_loading()
         # Build call text
-        if tool_name == "web_search":
+        if tool_name == "zai-web-search":
             query = args.get("query", "")
             call_text = f"Searching: {query}"
         elif tool_name == "read_webpage":

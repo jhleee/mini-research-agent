@@ -5,7 +5,7 @@ from typing import Any
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from .config import OPENAI_API_KEY, WEB_SEARCH_ENDPOINT, WEB_READER_ENDPOINT
+from .config import ZAI_API_KEY, WEB_SEARCH_ENDPOINT, WEB_READER_ENDPOINT
 
 
 class SearchResult(BaseModel):
@@ -27,7 +27,7 @@ class WebContent(BaseModel):
 async def call_mcp_tool(endpoint: str, tool_name: str, arguments: dict) -> dict:
     """Call an MCP tool endpoint using Streamable HTTP."""
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {ZAI_API_KEY}",
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
     }
@@ -79,11 +79,11 @@ async def call_mcp_tool(endpoint: str, tool_name: str, arguments: dict) -> dict:
 async def call_mcp_sse(endpoint: str, tool_name: str, arguments: dict) -> str:
     """Call MCP endpoint with SSE streaming support."""
     # Check API key
-    if not OPENAI_API_KEY:
-        return "Error: API key not configured. Please set OPENAI_API_KEY in .env"
+    if not ZAI_API_KEY:
+        return "Error: API key not configured. Please set ZAI_API_KEY in .env"
 
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {ZAI_API_KEY}",
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
     }
@@ -154,9 +154,9 @@ def extract_content(result: dict) -> str:
     return str(result)
 
 
-@tool
-async def web_search(query: str) -> str:
-    """Search the web for information.
+@tool(name="zai-web-search")
+async def zai_web_search(query: str) -> str:
+    """Search the web using Z.AI MCP service.
 
     Args:
         query: The search query to look up on the web.
@@ -204,4 +204,4 @@ async def read_webpage(url: str) -> str:
 
 
 # Tool list for the agent
-TOOLS = [web_search, read_webpage]
+TOOLS = [zai_web_search, read_webpage]
