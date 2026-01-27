@@ -23,7 +23,10 @@ class ResearchController:
         self._on_task_update: Optional[Callable] = None
         self._on_loading: Optional[Callable] = None
         self._on_tasks_clear: Optional[Callable] = None
+        self._on_tool_call: Optional[Callable] = None
+        self._on_tool_result: Optional[Callable] = None
         self._research_task: Optional[asyncio.Task] = None
+        self._current_tool_widget_id: Optional[str] = None
 
     def set_callbacks(
         self,
@@ -32,12 +35,16 @@ class ResearchController:
         on_task_update: Optional[Callable] = None,
         on_loading: Optional[Callable] = None,
         on_tasks_clear: Optional[Callable] = None,
+        on_tool_call: Optional[Callable] = None,
+        on_tool_result: Optional[Callable] = None,
     ):
         self._on_state_change = on_state_change
         self._on_message = on_message
         self._on_task_update = on_task_update
         self._on_loading = on_loading
         self._on_tasks_clear = on_tasks_clear
+        self._on_tool_call = on_tool_call
+        self._on_tool_result = on_tool_result
 
     def _notify_state_change(self):
         if self._on_state_change:
@@ -234,24 +241,55 @@ class ResearchController:
 
     def _handle_tool_call(self, tool_name: str, args: dict):
         self._hide_loading()
+        # Build call text
         if tool_name == "web_search":
             query = args.get("query", "")
-            self.add_tool_message(f"Searching: {query}")
-            self._show_loading("Searching web")
+            call_text = f"Searching: {query}"
         elif tool_name == "read_webpage":
             url = args.get("url", "")
             short_url = url[:60] + "..." if len(url) > 60 else url
-            self.add_tool_message(f"Reading: {short_url}")
-            self._show_loading("Reading page")
+            call_text = f"Reading: {short_url}"
         else:
-            self.add_tool_message(f"Calling: {tool_name}")
+            call_text = f"Calling: {tool_name}"
+
+        # Use new callback to create tool widget
+        if self._on_tool_call:
+            widget_id = self._on_tool_call(tool_name, call_text)
+            self._current_tool_widget_id = widget_id
+            debug_log(f"Tool call widget created: {widget_id}")
+        else:
+            self.add_tool_message(call_text)
 
     def _handle_tool_result(self, tool_name: str, result: str):
+        debug_log(f"_handle_tool_result called: tool={tool_name}, result={result[:100] if result else 'None'}...")
         self._hide_loading()
-        # Show truncated result
-        short_result = result[:150] + "..." if len(result) > 150 else result
-        short_result = short_result.replace("\n", " ")
-        self.add_tool_message(f"Result: {short_result}")
+
+        # Determine result text and error status
+        is_error = False
+        if result is None:
+            result_text = "(no response)"
+        elif not result or not result.strip():
+            result_text = "(empty)"
+        else:
+            result_lower = result.lower()
+            if "error" in result_lower or "failed" in result_lower or "exception" in result_lower:
+                is_error = True
+                result_text = result[:200] + "..." if len(result) > 200 else result
+            else:
+                result_text = result[:150] + "..." if len(result) > 150 else result
+            result_text = result_text.replace("\n", " ")
+
+        # Use new callback to update tool widget
+        if self._on_tool_result and self._current_tool_widget_id:
+            self._on_tool_result(self._current_tool_widget_id, result_text, is_error)
+            debug_log(f"Tool result updated: {self._current_tool_widget_id} -> {result_text[:50]}")
+            self._current_tool_widget_id = None
+        else:
+            # Fallback to old method
+            if is_error:
+                self.add_error_message(f"Tool error: {result_text}")
+            else:
+                self.add_tool_message(f"Result: {result_text}")
 
     def _handle_hierarchical_plan(self, data: dict):
         """Create hierarchical task list from plan."""

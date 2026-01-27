@@ -7,6 +7,13 @@ from textual.message import Message
 
 from .models import ChatMessage, Task, TaskStatus, MessageRole
 
+# Debug logging to file
+DEBUG_LOG = open("debug.log", "a", encoding="utf-8")
+
+def debug_log(msg: str):
+    DEBUG_LOG.write(f"[views] {msg}\n")
+    DEBUG_LOG.flush()
+
 
 class MessageWidget(Static):
     """A single chat message widget."""
@@ -35,13 +42,47 @@ class MessageWidget(Static):
         self.add_class(message.get_css_class())
 
 
+class ToolExecutionWidget(Static):
+    """Widget that shows tool execution with call and result together."""
+
+    def __init__(self, tool_name: str, call_text: str, **kwargs):
+        super().__init__("", **kwargs)
+        self.tool_name = tool_name
+        self.call_text = call_text
+        self.result_text = None
+        self.is_error = False
+        self.add_class("chat-message")
+        self.add_class("tool-execution")
+        self._update_display()
+
+    def _update_display(self):
+        """Update the widget display based on current state."""
+        lines = [f"[magenta]Tool:[/magenta] {self.call_text}"]
+
+        if self.result_text is None:
+            # Still waiting for result
+            lines.append("[dim]  ⏳ waiting...[/dim]")
+        elif self.is_error:
+            lines.append(f"[red]  ✗ {self.result_text}[/red]")
+        else:
+            lines.append(f"[dim]  → {self.result_text}[/dim]")
+
+        self.update("\n".join(lines))
+
+    def set_result(self, result: str, is_error: bool = False):
+        """Set the result and update display."""
+        self.result_text = result
+        self.is_error = is_error
+        self._update_display()
+
+
 class TaskWidget(Static):
     """A single task widget."""
 
     STATUS_STYLES = {
-        TaskStatus.PENDING: ("[dim][  ][/dim]", "[dim]"),
-        TaskStatus.IN_PROGRESS: ("[yellow][..][/yellow]", "[yellow]"),
-        TaskStatus.COMPLETED: ("[green][*][/green]", "[green]"),
+        TaskStatus.PENDING: ("[dim][   ][/dim]", "[dim]"),
+        TaskStatus.IN_PROGRESS: ("[yellow][...][/yellow]", "[yellow]"),
+        TaskStatus.COMPLETED: ("[green][ * ][/green]", "[green]"),
     }
 
     def __init__(self, task: Task, **kwargs):
@@ -97,8 +138,33 @@ class ChatPanel(Widget):
             widget = MessageWidget(message, id=f"msg-{len(scroll.children)}")
             scroll.mount(widget)
             scroll.scroll_end(animate=False)
-        except Exception:
-            pass
+        except Exception as e:
+            debug_log(f"ChatPanel.add_message ERROR: {e}")
+
+    def add_tool_execution(self, tool_name: str, call_text: str) -> str:
+        """Add a tool execution widget and return its ID."""
+        try:
+            self.hide_loading()
+            scroll = self.query_one("#chat-scroll", VerticalScroll)
+            widget_id = f"tool-{len(scroll.children)}"
+            widget = ToolExecutionWidget(tool_name, call_text, id=widget_id)
+            scroll.mount(widget)
+            scroll.scroll_end(animate=False)
+            return widget_id
+        except Exception as e:
+            debug_log(f"ChatPanel.add_tool_execution ERROR: {e}")
+            return ""
+
+    def update_tool_result(self, widget_id: str, result: str, is_error: bool = False):
+        """Update a tool execution widget with its result."""
+        try:
+            if not widget_id:
+                return
+            scroll = self.query_one("#chat-scroll", VerticalScroll)
+            widget = scroll.query_one(f"#{widget_id}", ToolExecutionWidget)
+            widget.set_result(result, is_error)
+        except Exception as e:
+            debug_log(f"ChatPanel.update_tool_result ERROR: {e}")
 
     def show_loading(self, text: str = "LLM responding"):
         try:

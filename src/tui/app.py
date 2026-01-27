@@ -59,6 +59,8 @@ class MainScreen(Screen):
             on_state_change=self._on_state_change,
             on_loading=self._on_loading,
             on_tasks_clear=self._on_tasks_clear,
+            on_tool_call=self._on_tool_call,
+            on_tool_result=self._on_tool_result,
         )
         self.controller.add_system_message(
             "Welcome! Enter a research question to get started."
@@ -86,6 +88,16 @@ class MainScreen(Screen):
     def _on_tasks_clear(self):
         task_panel = self.query_one("#task-panel", TaskPanel)
         task_panel.clear_tasks()
+
+    def _on_tool_call(self, tool_name: str, call_text: str) -> str:
+        """Create a tool execution widget and return its ID."""
+        chat_panel = self.query_one("#chat-panel", ChatPanel)
+        return chat_panel.add_tool_execution(tool_name, call_text)
+
+    def _on_tool_result(self, widget_id: str, result: str, is_error: bool):
+        """Update a tool execution widget with its result."""
+        chat_panel = self.query_one("#chat-panel", ChatPanel)
+        chat_panel.update_tool_result(widget_id, result, is_error)
 
     async def on_input_bar_submitted(self, event: InputBar.Submitted):
         if event.value:
