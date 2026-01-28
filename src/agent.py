@@ -726,11 +726,33 @@ Then read relevant webpages to gather detailed information.""")
     debug_log(f"[research_node] Invoking LLM with query: '{current_query[:80]}'")
     response = llm.invoke(messages)
 
-    # Log tool calls if any
+    # Log tool calls or lack thereof
     if hasattr(response, "tool_calls") and response.tool_calls:
         debug_log(f"[research_node] LLM requested {len(response.tool_calls)} tool calls:")
         for tc in response.tool_calls:
             debug_log(f"  - {tc.get('name')}: {str(tc.get('args', {}))[:100]}")
+    else:
+        # LLM didn't call any tools - log the response content for debugging
+        content = response.content if hasattr(response, "content") else str(response)
+        debug_log(f"[research_node] WARNING: LLM did NOT call any tools!")
+        debug_log(f"[research_node] LLM response: '{content[:200]}...'")
+
+        # Check how many consecutive iterations without tool calls
+        iteration = state.get("iteration", 0)
+        if iteration >= 1:  # Force tool call after just 1 iteration without tools
+            # After 3 iterations without tool calls, force a tool call by creating one
+            debug_log(f"[research_node] Forcing webSearchPrime call after {iteration} iterations without tools")
+            from langchain_core.messages import AIMessage as AIMsg
+            # Create a forced tool call
+            forced_response = AIMsg(
+                content="",
+                tool_calls=[{
+                    "name": "webSearchPrime",
+                    "args": {"search_query": current_query},
+                    "id": f"forced_call_{iteration}"
+                }]
+            )
+            response = forced_response
 
     executed = state.get("search_queries", [])
     debug_log(f"[research_node] END - adding query to executed list (now {len(executed)+1} total)")
