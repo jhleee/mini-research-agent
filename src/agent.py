@@ -414,28 +414,154 @@ def generate_dynamic_queries(
         ]
 
 
+def _normalize_query(query: str) -> str:
+    """Normalize a query for comparison by removing common modifiers and whitespace."""
+    import re
+    normalized = query.strip().lower()
+
+    # Remove quantity modifiers (e.g., "100g", "1인분", "개당")
+    quantity_patterns = [
+        r'\b\d+g\b', r'\b\d+kg\b', r'\b\d+ml\b', r'\b\d+l\b',
+        r'\b\d+인분\b', r'\b\d+개\b', r'\b개당\b', r'\b1인분\b',
+    ]
+    for pattern in quantity_patterns:
+        normalized = re.sub(pattern, '', normalized)
+
+    # Remove common modifying phrases
+    modifiers_to_remove = [
+        r'\s*성분\s*(및|과|와)?\s*', r'\s*및\s+', r'\s*과\s+', r'\s*와\s+',
+        r'\s*원재료\s*', r'\s*재료\s*', r'\s*정보\s*', r'\s*검색\s*',
+        r'\s*알아보기\s*', r'\s*찾기\s*', r'\s*조회\s*'
+    ]
+    for modifier in modifiers_to_remove:
+        normalized = re.sub(modifier, ' ', normalized)
+
+    # Normalize common spelling variations
+    spelling_variants = [
+        (r'마시멜로우', '마시멜로'),
+        (r'마쉬멜로우', '마시멜로'),
+        (r'마쉬멜로', '마시멜로'),
+    ]
+    for pattern, replacement in spelling_variants:
+        normalized = re.sub(pattern, replacement, normalized)
+
+    # Remove extra whitespace
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    return normalized
+
+
+def _extract_core_term(query: str) -> str:
+    """Extract the core term (main noun) from a query for similarity matching.
+
+    For a query like "피스타치오 칼로리", extracts "피스타치오".
+    For a query like "카다이프 성분 및 칼로리", extracts "카다이프".
+    """
+    import re
+    normalized = _normalize_query(query)
+
+    # Remove common search suffixes to get the core term
+    search_suffixes = [
+        r'\s*칼로리$', r'\s*열량$', r'\s*영양\s*정보$', r'\s*영양\s*성분$',
+        r'\s*가격$', r'\s*효능$', r'\s*효과$', r'\s*부작용$',
+    ]
+    core = normalized
+    for suffix in search_suffixes:
+        core = re.sub(suffix, '', core)
+
+    return core.strip()
+
+
+def _is_duplicate_or_similar(new_query: str, existing_queries: list[str]) -> bool:
+    """Check if a query is duplicate or similar to existing queries.
+
+    Returns True if:
+    1. Exact match exists after normalization
+    2. Core terms are the same AND they're searching for similar information
+       (e.g., "카다이프 칼로리" vs "카다이프 성분 및 칼로리")
+
+    NOTE: We avoid substring matching as it's too aggressive
+    (e.g., "두쫀쿠 재료" should NOT match "두쫀쿠란")
+    """
+    new_normalized = _normalize_query(new_query)
+    new_core = _extract_core_term(new_query)
+
+    for existing in existing_queries:
+        existing_normalized = _normalize_query(existing)
+        existing_core = _extract_core_term(existing)
+
+        # Exact match after normalization
+        if new_normalized == existing_normalized:
+            debug_log(f"[_is_duplicate_or_similar] Exact duplicate: '{new_query}' matches '{existing}'")
+            return True
+
+        # Core term match - only consider as duplicate if both have the same core
+        # AND they're both looking for similar property (e.g., both asking about calories)
+        # Skip if one query is for definition (e.g., "XXX란", "XXX 뜻")
+        if new_core and existing_core and (new_core == existing_core):
+            # Check if either is a definition query (should not match property queries)
+            def_patterns = ['란', '뜻', '정의', '의미', '무엇']
+            new_is_def = any(p in new_query for p in def_patterns)
+            existing_is_def = any(p in existing for p in def_patterns)
+
+            # If one is definition and other is property, they're different
+            if new_is_def != existing_is_def:
+                continue
+
+            debug_log(f"[_is_duplicate_or_similar] Same core term: '{new_query}' (core: {new_core}) matches '{existing}' (core: {existing_core})")
+            return True
+
+    return False
+
+
 def add_dynamic_tasks_to_plan(
     plan: HierarchicalPlan,
     dynamic_queries: list[Dict[str, str]],
     parent_main_task_id: str
-) -> HierarchicalPlan:
-    """Add dynamically generated queries as new sub-tasks to the plan."""
+) -> tuple[HierarchicalPlan, list[str]]:
+    """Add dynamically generated queries as new sub-tasks to the plan.
+
+    Filters out duplicate or similar queries that already exist in the plan.
+
+    Returns:
+        tuple: (updated_plan, list of actually added query strings)
+    """
     plan = copy.deepcopy(plan)
+    added_queries: list[str] = []
+
+    # Collect all existing queries from all main tasks
+    existing_queries: list[str] = []
+    for main_task in plan["main_tasks"]:
+        for sub_task in main_task["sub_tasks"]:
+            existing_queries.append(sub_task["query"])
+
+    debug_log(f"[add_dynamic_tasks_to_plan] Existing queries: {existing_queries}")
 
     # Find the parent main task
     for main_task in plan["main_tasks"]:
         if main_task["id"] == parent_main_task_id:
             # Get the next sub-task ID
             existing_count = len(main_task["sub_tasks"])
+            added_count = 0
 
-            for idx, query_info in enumerate(dynamic_queries, start=1):
+            for query_info in dynamic_queries:
+                new_query = str(query_info.get("query", ""))[:200]
+
+                # Skip if duplicate or similar to existing query
+                if _is_duplicate_or_similar(new_query, existing_queries):
+                    debug_log(f"[add_dynamic_tasks_to_plan] Skipping duplicate/similar query: '{new_query}'")
+                    continue
+
                 new_sub_task: SubTask = {
-                    "id": f"{parent_main_task_id}.{existing_count + idx}",
-                    "query": str(query_info.get("query", ""))[:200],
+                    "id": f"{parent_main_task_id}.{existing_count + added_count + 1}",
+                    "query": new_query,
                     "status": TaskStatus.PENDING.value,
                     "findings": []
                 }
                 main_task["sub_tasks"].append(new_sub_task)
+                existing_queries.append(new_query)  # Add to list to prevent duplicates within batch
+                added_queries.append(new_query)
+                added_count += 1
+                debug_log(f"[add_dynamic_tasks_to_plan] Added new sub-task: {new_sub_task['id']} - '{new_query}'")
 
             # Reset main task status to in_progress if it was completed
             if main_task["status"] == TaskStatus.COMPLETED.value:
@@ -443,7 +569,7 @@ def add_dynamic_tasks_to_plan(
 
             break
 
-    return plan
+    return plan, added_queries
 
 
 def build_hierarchical_plan(query: str, llm: ChatOpenAI) -> HierarchicalPlan:
@@ -859,25 +985,31 @@ def replan_node(state: ResearchState) -> dict:
 
     debug_log(f"[replan_node] Generated {len(dynamic_queries)} dynamic queries")
 
-    # Add dynamic queries as new sub-tasks
-    updated_plan = add_dynamic_tasks_to_plan(
+    # Add dynamic queries as new sub-tasks (with deduplication)
+    updated_plan, added_queries = add_dynamic_tasks_to_plan(
         plan,
         dynamic_queries,
         target_main_id
     )
 
-    # Update flat plan for backward compatibility
+    debug_log(f"[replan_node] Actually added {len(added_queries)} queries after deduplication")
+
+    # If no queries were actually added (all duplicates), skip replanning
+    if not added_queries:
+        debug_log(f"[replan_node] All queries were duplicates, skipping")
+        return {
+            "needs_replanning": False,
+            "pending_replan_request": None,
+        }
+
+    # Update flat plan for backward compatibility (only with actually added queries)
     flat_plan = state.get("research_plan", [])[:]
-    for query_info in dynamic_queries:
-        query = query_info.get("query", "")
+    for query in added_queries:
         if query and query not in flat_plan:
             flat_plan.append(query)
 
     # Get the first new pending task
     next_main_id, next_sub_id = get_next_pending_task(updated_plan)
-
-    # Extract query strings for the event
-    new_query_strings = [q.get("query", "") for q in dynamic_queries]
 
     debug_log(f"[replan_node] END - next task: main={next_main_id}, sub={next_sub_id}")
 
@@ -889,10 +1021,10 @@ def replan_node(state: ResearchState) -> dict:
         "needs_replanning": False,
         "pending_replan_request": None,
         "replan_count": state.get("replan_count", 0) + 1,
-        # Store for event emission (not cleared like pending_replan_request)
+        # Store for event emission (only actually added queries, after deduplication)
         "last_replan_items": replan_request.get("extracted_items", []),
-        "last_replan_queries": new_query_strings,
-        "messages": [AIMessage(content=f"Dynamic replanning: Added {len(dynamic_queries)} follow-up queries for items: {', '.join(replan_request['extracted_items'])}")],
+        "last_replan_queries": added_queries,
+        "messages": [AIMessage(content=f"Dynamic replanning: Added {len(added_queries)} follow-up queries for items: {', '.join(replan_request['extracted_items'])}")],
     }
 
 
