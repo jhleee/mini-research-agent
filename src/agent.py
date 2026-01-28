@@ -10,6 +10,13 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
 from .config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, MAX_ITERATIONS
+
+# Debug logging
+DEBUG_LOG = open("agent_debug.log", "w", encoding="utf-8")
+
+def debug_log(msg: str):
+    DEBUG_LOG.write(f"{msg}\n")
+    DEBUG_LOG.flush()
 from .state import ResearchState, HierarchicalPlan, MainTask, SubTask, TaskStatus, DynamicQueryRequest
 from .tools import initialize_tools
 from .prompts import (
@@ -473,6 +480,9 @@ def build_hierarchical_plan(query: str, llm: ChatOpenAI) -> HierarchicalPlan:
     try:
         # Phase 1: Intent Analysis
         intent_result = analyze_intent(query, llm)
+        is_sequential = intent_result.get("is_sequential", False)
+
+        debug_log(f"[build_hierarchical_plan] is_sequential={is_sequential}")
 
         # Phase 2: Build main tasks and decompose each
         main_tasks: list[MainTask] = []
@@ -485,18 +495,30 @@ def build_hierarchical_plan(query: str, llm: ChatOpenAI) -> HierarchicalPlan:
             topic = str(topic_info.get("topic", f"Topic {idx}"))[:50]
             description = str(topic_info.get("description", query))
 
-            # Decompose into sub-tasks
-            sub_task_infos = decompose_task(topic, description, query, llm)
-
             sub_tasks: list[SubTask] = []
-            for sub_idx, st_info in enumerate(sub_task_infos, start=1):
-                sub_task: SubTask = {
-                    "id": f"{idx}.{sub_idx}",
-                    "query": str(st_info.get("query", ""))[:200],
+
+            if is_sequential:
+                # For sequential queries: Create only ONE discovery sub-task
+                # Additional tasks will be added dynamically via replanning
+                debug_log(f"[build_hierarchical_plan] Sequential query - creating single discovery task")
+                sub_tasks = [{
+                    "id": f"{idx}.1",
+                    "query": description[:200],  # Use the description as the discovery query
                     "status": TaskStatus.PENDING.value,
                     "findings": []
-                }
-                sub_tasks.append(sub_task)
+                }]
+            else:
+                # For parallel queries: Decompose into multiple sub-tasks
+                sub_task_infos = decompose_task(topic, description, query, llm)
+
+                for sub_idx, st_info in enumerate(sub_task_infos, start=1):
+                    sub_task: SubTask = {
+                        "id": f"{idx}.{sub_idx}",
+                        "query": str(st_info.get("query", ""))[:200],
+                        "status": TaskStatus.PENDING.value,
+                        "findings": []
+                    }
+                    sub_tasks.append(sub_task)
 
             # Ensure at least one sub-task
             if not sub_tasks:
@@ -562,11 +584,21 @@ def plan_node(state: ResearchState) -> dict:
     3. Validation - Check if plan is comprehensive
     4. Refinement - Improve plan if needed
     """
+    debug_log(f"\n{'='*60}")
+    debug_log(f"[plan_node] START - query: '{state['query'][:80]}'")
+
     llm = create_llm()
     query = state["query"]
 
     # Build hierarchical plan through the agentic pipeline
     plan = build_hierarchical_plan(query, llm)
+
+    # Log plan structure
+    debug_log(f"[plan_node] Plan created with {plan['intent_count']} main tasks:")
+    for mt in plan["main_tasks"]:
+        debug_log(f"  Main Task {mt['id']}: {mt['topic']}")
+        for st in mt["sub_tasks"]:
+            debug_log(f"    Sub Task {st['id']}: {st['query'][:60]}...")
 
     # Convert to flat list for backward compatibility
     flat_plan = []
@@ -576,11 +608,14 @@ def plan_node(state: ResearchState) -> dict:
 
     # Get first pending task
     first_main_id, first_sub_id = get_first_pending_task(plan)
+    debug_log(f"[plan_node] First task: main={first_main_id}, sub={first_sub_id}")
 
     # Build summary message
     task_summary = []
     for mt in plan["main_tasks"]:
         task_summary.append(f"[{mt['topic']}]: {len(mt['sub_tasks'])} queries")
+
+    debug_log(f"[plan_node] END - total {len(flat_plan)} queries")
 
     return {
         "hierarchical_plan": plan,
@@ -603,20 +638,27 @@ def find_current_task(
     current_sub_id: Optional[str]
 ) -> Tuple[Optional[str], Optional[str]]:
     """Find the current query and main topic from hierarchical plan."""
+    debug_log(f"[find_current_task] main_id={current_main_id}, sub_id={current_sub_id}")
     if not plan or not current_main_id or not current_sub_id:
+        debug_log(f"[find_current_task] Missing plan or IDs, returning None")
         return None, None
 
     for main_task in plan["main_tasks"]:
         if main_task["id"] == current_main_id:
             for sub_task in main_task["sub_tasks"]:
                 if sub_task["id"] == current_sub_id:
+                    debug_log(f"[find_current_task] Found query='{sub_task['query'][:50]}', topic='{main_task['topic']}'")
                     return sub_task["query"], main_task["topic"]
 
+    debug_log(f"[find_current_task] Task not found in plan")
     return None, None
 
 
 def research_node(state: ResearchState, tools: list = None) -> dict:
     """Execute research using tools, with hierarchical task awareness."""
+    debug_log(f"\n{'='*60}")
+    debug_log(f"[research_node] START - iteration={state.get('iteration', 0)}")
+
     llm = create_llm().bind_tools(tools or [])
 
     # Get current task context from hierarchical plan
@@ -624,25 +666,31 @@ def research_node(state: ResearchState, tools: list = None) -> dict:
     current_main_id = state.get("current_main_task_id")
     current_sub_id = state.get("current_sub_task_id")
 
+    debug_log(f"[research_node] current_main_id={current_main_id}, current_sub_id={current_sub_id}")
+
     # Find the current sub-task to execute
     current_query = None
     current_main_topic = None
 
     if plan and current_main_id and current_sub_id:
         current_query, current_main_topic = find_current_task(plan, current_main_id, current_sub_id)
+        debug_log(f"[research_node] From hierarchical plan: query='{current_query[:50] if current_query else None}'")
 
     # Fallback to flat plan if hierarchical lookup fails
     if not current_query:
         flat_plan = state.get("research_plan", [])
         executed = state.get("search_queries", [])
         remaining = [q for q in flat_plan if q not in executed]
+        debug_log(f"[research_node] Fallback to flat plan: total={len(flat_plan)}, executed={len(executed)}, remaining={len(remaining)}")
 
         if not remaining:
+            debug_log(f"[research_node] No remaining queries -> synthesizing")
             return {
                 "status": "synthesizing",
                 "messages": [AIMessage(content="All planned searches completed. Moving to synthesis.")]
             }
         current_query = remaining[0]
+        debug_log(f"[research_node] Using flat plan query: '{current_query[:50]}'")
 
     # Build context header with main task awareness
     context_header = ""
@@ -668,8 +716,17 @@ Then read relevant webpages to gather detailed information.""")
     # Add previous messages for context
     messages.extend(state.get("messages", [])[-10:])
 
+    debug_log(f"[research_node] Invoking LLM with query: '{current_query[:80]}'")
     response = llm.invoke(messages)
+
+    # Log tool calls if any
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        debug_log(f"[research_node] LLM requested {len(response.tool_calls)} tool calls:")
+        for tc in response.tool_calls:
+            debug_log(f"  - {tc.get('name')}: {str(tc.get('args', {}))[:100]}")
+
     executed = state.get("search_queries", [])
+    debug_log(f"[research_node] END - adding query to executed list (now {len(executed)+1} total)")
 
     return {
         "messages": [response],
@@ -678,28 +735,36 @@ Then read relevant webpages to gather detailed information.""")
     }
 
 
-def update_plan_findings(
+def mark_task_completed(
     plan: HierarchicalPlan,
     main_id: str,
     sub_id: str,
-    findings: list[str]
+    findings: list[str] = None
 ) -> HierarchicalPlan:
-    """Update the hierarchical plan with new findings for a sub-task."""
+    """Mark a sub-task as completed and optionally add findings."""
     plan = copy.deepcopy(plan)
+    findings = findings or []
+
+    debug_log(f"[mark_task_completed] main_id={main_id}, sub_id={sub_id}, findings_count={len(findings)}")
 
     for main_task in plan["main_tasks"]:
         if main_task["id"] == main_id:
             for sub_task in main_task["sub_tasks"]:
                 if sub_task["id"] == sub_id:
-                    sub_task["findings"].extend(findings)
+                    old_status = sub_task["status"]
+                    if findings:
+                        sub_task["findings"].extend(findings)
                     sub_task["status"] = TaskStatus.COMPLETED.value
+                    debug_log(f"[mark_task_completed] Sub-task {sub_id}: {old_status} -> COMPLETED")
                     break
             # Update main task status to in_progress if it was pending
             if main_task["status"] == TaskStatus.PENDING.value:
                 main_task["status"] = TaskStatus.IN_PROGRESS.value
+                debug_log(f"[mark_task_completed] Main task {main_id}: PENDING -> IN_PROGRESS")
             # Check if all sub-tasks are complete
             if all(st["status"] == TaskStatus.COMPLETED.value for st in main_task["sub_tasks"]):
                 main_task["status"] = TaskStatus.COMPLETED.value
+                debug_log(f"[mark_task_completed] Main task {main_id}: -> COMPLETED (all sub-tasks done)")
             break
 
     return plan
@@ -707,15 +772,19 @@ def update_plan_findings(
 
 def get_next_pending_task(plan: Optional[HierarchicalPlan]) -> Tuple[Optional[str], Optional[str]]:
     """Get the next pending task to execute."""
+    debug_log(f"[get_next_pending_task] Looking for next pending task...")
     if not plan:
+        debug_log(f"[get_next_pending_task] No plan, returning None")
         return None, None
 
     # Find next pending sub-task
     for main_task in plan["main_tasks"]:
         for sub_task in main_task["sub_tasks"]:
             if sub_task["status"] == TaskStatus.PENDING.value:
+                debug_log(f"[get_next_pending_task] Found: main={main_task['id']}, sub={sub_task['id']}, query='{sub_task['query'][:40]}'")
                 return main_task["id"], sub_task["id"]
 
+    debug_log(f"[get_next_pending_task] No pending tasks - all complete!")
     return None, None  # All tasks complete
 
 
@@ -725,16 +794,22 @@ def replan_node(state: ResearchState) -> dict:
     This node is called when search results indicate that follow-up queries
     are needed based on discovered items (e.g., "find 3 pasta types" → search each).
     """
+    debug_log(f"\n{'='*60}")
+    debug_log(f"[replan_node] START")
+
     llm = create_llm()
     replan_request = state.get("pending_replan_request")
     plan = state.get("hierarchical_plan")
     current_main_id = state.get("current_main_task_id")
 
     if not replan_request or not plan:
+        debug_log(f"[replan_node] No replan request or plan, skipping")
         return {
             "needs_replanning": False,
             "pending_replan_request": None,
         }
+
+    debug_log(f"[replan_node] Extracted items: {replan_request.get('extracted_items', [])}")
 
     # Use the current main task ID or default to "1"
     target_main_id = current_main_id or "1"
@@ -747,10 +822,13 @@ def replan_node(state: ResearchState) -> dict:
     )
 
     if not dynamic_queries:
+        debug_log(f"[replan_node] No dynamic queries generated, skipping")
         return {
             "needs_replanning": False,
             "pending_replan_request": None,
         }
+
+    debug_log(f"[replan_node] Generated {len(dynamic_queries)} dynamic queries")
 
     # Add dynamic queries as new sub-tasks
     updated_plan = add_dynamic_tasks_to_plan(
@@ -769,6 +847,8 @@ def replan_node(state: ResearchState) -> dict:
     # Get the first new pending task
     next_main_id, next_sub_id = get_next_pending_task(updated_plan)
 
+    debug_log(f"[replan_node] END - next task: main={next_main_id}, sub={next_sub_id}")
+
     return {
         "hierarchical_plan": updated_plan,
         "research_plan": flat_plan,
@@ -781,35 +861,82 @@ def replan_node(state: ResearchState) -> dict:
     }
 
 
+def _extract_message_content(msg) -> str:
+    """Extract text content from a message, handling various content formats."""
+    if not hasattr(msg, "content"):
+        return ""
+
+    content = msg.content
+
+    # Handle string content directly
+    if isinstance(content, str):
+        return content
+
+    # Handle list content (MCP tool results come as list of content items)
+    if isinstance(content, list):
+        texts = []
+        for item in content:
+            if isinstance(item, dict):
+                # Standard MCP format: {"type": "text", "text": "..."}
+                if item.get("type") == "text":
+                    texts.append(item.get("text", ""))
+                # Sometimes just {"text": "..."}
+                elif "text" in item:
+                    texts.append(item.get("text", ""))
+            elif isinstance(item, str):
+                texts.append(item)
+        return " ".join(texts)
+
+    return str(content) if content else ""
+
+
 def process_tool_results(state: ResearchState) -> dict:
     """Process tool results, track findings per task, check for replanning needs, and advance to next task."""
+    debug_log(f"\n{'='*60}")
+    debug_log(f"[process_tool_results] START")
+
     messages = state.get("messages", [])
     plan = state.get("hierarchical_plan")
     current_main_id = state.get("current_main_task_id")
     current_sub_id = state.get("current_sub_task_id")
+
+    debug_log(f"[process_tool_results] current_main_id={current_main_id}, current_sub_id={current_sub_id}")
+    debug_log(f"[process_tool_results] Processing {len(messages)} messages (checking last 5)")
 
     # Look for tool results in recent messages
     new_findings = []
     new_urls = list(state.get("read_urls", []))
     search_results_content = ""
 
-    for msg in messages[-5:]:
-        if hasattr(msg, "content") and isinstance(msg.content, str):
-            content = msg.content
+    for i, msg in enumerate(messages[-5:]):
+        msg_type = type(msg).__name__
 
+        # Extract content using helper function that handles list format
+        content = _extract_message_content(msg)
+        content_len = len(content)
+        debug_log(f"[process_tool_results] Message {i}: type={msg_type}, content_len={content_len}")
+
+        if content:
             # Check if this looks like substantial content
             if len(content) > 200:
                 # Extract a summary finding
                 summary = content[:500] + "..." if len(content) > 500 else content
                 if summary not in state.get("findings", []):
                     new_findings.append(summary)
+                    debug_log(f"[process_tool_results] Added finding: '{summary[:80]}...'")
                 # Accumulate for replanning analysis
                 search_results_content += content + "\n"
 
-    # Update hierarchical plan with findings if available
+    debug_log(f"[process_tool_results] Extracted {len(new_findings)} new findings")
+    debug_log(f"[process_tool_results] search_results_content length: {len(search_results_content)}")
+
+    # ALWAYS mark current task as completed (key fix!)
     updated_plan = plan
-    if plan and current_main_id and current_sub_id and new_findings:
-        updated_plan = update_plan_findings(plan, current_main_id, current_sub_id, new_findings)
+    if plan and current_main_id and current_sub_id:
+        debug_log(f"[process_tool_results] Marking task {current_sub_id} as COMPLETED")
+        updated_plan = mark_task_completed(plan, current_main_id, current_sub_id, new_findings)
+    else:
+        debug_log(f"[process_tool_results] Cannot mark task - missing plan or IDs")
 
     # Check if dynamic replanning is needed (only if we haven't exceeded replan limit)
     needs_replanning = False
@@ -821,14 +948,13 @@ def process_tool_results(state: ResearchState) -> dict:
     if plan and current_main_id and current_sub_id:
         current_query, _ = find_current_task(plan, current_main_id, current_sub_id)
 
-    # Only attempt replanning if:
-    # 1. We have search results
-    # 2. We haven't exceeded the replan limit
-    # 3. We're on the first sub-task (typically the discovery phase)
-    if (search_results_content and
-        replan_count < MAX_REPLANS and
-        current_sub_id and current_sub_id.endswith(".1")):  # First sub-task of a main task
-
+    # Check if dynamic replanning is needed
+    # Conditions:
+    # 1. We have search results with substantial content
+    # 2. We haven't exceeded the replan limit (MAX_REPLANS)
+    # Allow replanning at any step - the LLM will judge if follow-up is needed
+    if search_results_content and replan_count < MAX_REPLANS:
+        debug_log(f"[process_tool_results] Checking for dynamic replanning (replan_count={replan_count}/{MAX_REPLANS})...")
         llm = create_llm()
         replan_request = analyze_for_replanning(
             state["query"],
@@ -840,9 +966,14 @@ def process_tool_results(state: ResearchState) -> dict:
         if replan_request:
             needs_replanning = True
             pending_replan_request = replan_request
+            debug_log(f"[process_tool_results] Replanning needed: {replan_request.get('extracted_items', [])}")
+        else:
+            debug_log(f"[process_tool_results] No replanning needed (LLM judged no follow-up required)")
 
     # Advance to next sub-task
     next_main_id, next_sub_id = get_next_pending_task(updated_plan)
+    debug_log(f"[process_tool_results] Next task: main={next_main_id}, sub={next_sub_id}")
+    debug_log(f"[process_tool_results] END")
 
     return {
         "findings": state.get("findings", []) + new_findings,
@@ -857,8 +988,14 @@ def process_tool_results(state: ResearchState) -> dict:
 
 def synthesize_node(state: ResearchState) -> dict:
     """Synthesize findings into a hierarchical report organized by main tasks."""
+    debug_log(f"\n{'='*60}")
+    debug_log(f"[synthesize_node] START")
+
     llm = create_llm()
     plan = state.get("hierarchical_plan")
+
+    total_findings = len(state.get("findings", []))
+    debug_log(f"[synthesize_node] Total findings in state: {total_findings}")
 
     if plan and plan["main_tasks"]:
         # Build hierarchical synthesis with findings per main task
@@ -872,6 +1009,7 @@ def synthesize_node(state: ResearchState) -> dict:
                 if sub_task["findings"]:
                     topic_findings.extend(sub_task["findings"])
 
+            debug_log(f"[synthesize_node] Main task '{main_task['topic']}': {len(topic_findings)} findings")
             topics_summary.append(f"- {main_task['topic']}: {main_task['description']}")
 
             # Build section for this main task
@@ -889,6 +1027,7 @@ def synthesize_node(state: ResearchState) -> dict:
         findings_text = "\n\n---\n\n".join(all_findings) if all_findings else "No findings."
     else:
         # Fallback to flat synthesis
+        debug_log(f"[synthesize_node] Using flat synthesis (no hierarchical plan)")
         system_prompt = SYNTHESIZER_PROMPT
         findings = state.get("findings", ["No specific findings were gathered."])
         findings_text = "\n\n---\n\n".join(findings)
@@ -904,6 +1043,7 @@ Please synthesize these findings into a comprehensive research report.""")
     ]
 
     response = llm.invoke(messages)
+    debug_log(f"[synthesize_node] END - report length: {len(response.content)} chars")
 
     return {
         "report": response.content,
@@ -915,15 +1055,27 @@ Please synthesize these findings into a comprehensive research report.""")
 def should_continue(state: ResearchState) -> Literal["research", "tools", "synthesize", "end"]:
     """Determine the next step in the workflow."""
     status = state.get("status", "planning")
+    iteration = state.get("iteration", 0)
+    current_sub_id = state.get("current_sub_task_id")
+
+    debug_log(f"\n[should_continue] status={status}, iteration={iteration}, current_sub_id={current_sub_id}")
 
     if status == "done":
+        debug_log(f"[should_continue] -> end (status=done)")
         return "end"
 
     if status == "synthesizing":
+        debug_log(f"[should_continue] -> synthesize (status=synthesizing)")
         return "synthesize"
 
     # Check iteration limit
-    if state.get("iteration", 0) >= MAX_ITERATIONS:
+    if iteration >= MAX_ITERATIONS:
+        debug_log(f"[should_continue] -> synthesize (iteration limit reached: {iteration}>={MAX_ITERATIONS})")
+        return "synthesize"
+
+    # Check if all tasks are complete (no more pending tasks)
+    if current_sub_id is None:
+        debug_log(f"[should_continue] -> synthesize (no more pending tasks)")
         return "synthesize"
 
     # Check if there are tool calls to process
@@ -931,17 +1083,26 @@ def should_continue(state: ResearchState) -> Literal["research", "tools", "synth
     if messages:
         last_message = messages[-1]
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            debug_log(f"[should_continue] -> tools (found {len(last_message.tool_calls)} tool calls)")
             return "tools"
 
+    debug_log(f"[should_continue] -> research (default)")
     return "research"
 
 
 def should_continue_after_process(state: ResearchState) -> Literal["research", "replan"]:
     """Determine whether to continue research or do dynamic replanning."""
+    needs_replanning = state.get("needs_replanning", False)
+    has_replan_request = state.get("pending_replan_request") is not None
+
+    debug_log(f"[should_continue_after_process] needs_replanning={needs_replanning}, has_request={has_replan_request}")
+
     # Check if dynamic replanning is needed
-    if state.get("needs_replanning", False) and state.get("pending_replan_request"):
+    if needs_replanning and has_replan_request:
+        debug_log(f"[should_continue_after_process] -> replan")
         return "replan"
 
+    debug_log(f"[should_continue_after_process] -> research")
     return "research"
 
 

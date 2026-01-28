@@ -2,6 +2,7 @@
 import json
 from typing import Optional
 from functools import partial
+from urllib.parse import urlsplit, urlunsplit, quote
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.tools import StructuredTool
 
@@ -12,7 +13,7 @@ WEB_READER_DEFAULTS = {
     "return_format": "markdown",
     "retain_images": False,
     "no_gfm": False,
-    "with_images_summary": True,
+    "with_images_summary": False,
     "with_links_summary": True,
 }
 
@@ -74,7 +75,8 @@ def extract_mcp_result(result) -> str:
                             title = r.get("title", "")
                             link = r.get("link", "")
                             content = r.get("content", "")
-                            formatted.append(f"- {title}\n  {link}\n  {content[:200]}")
+                            formatted.append(
+                                f"- {title}\n  {link}\n  {content[:200]}")
                         texts.append("\n\n".join(formatted))
                     else:
                         texts.append(str(parsed))
@@ -93,6 +95,17 @@ TOOLS = []
 _original_web_reader = None
 
 
+def _encode_url(url: str) -> str:
+    """Encode URL to handle non-ASCII characters (e.g., Korean)."""
+    parts = urlsplit(url)
+    # Encode the path component, preserving slashes
+    encoded_path = quote(parts.path, safe='/:@')
+    # Encode the query component if present
+    encoded_query = quote(parts.query, safe='=&') if parts.query else ''
+    # Reconstruct the URL
+    return urlunsplit((parts.scheme, parts.netloc, encoded_path, encoded_query, parts.fragment))
+
+
 def _create_wrapped_web_reader(original_tool):
     """Create a wrapped webReader tool with default parameters."""
     global _original_web_reader
@@ -107,8 +120,10 @@ def _create_wrapped_web_reader(original_tool):
         Returns:
             The main content extracted from the webpage in markdown format.
         """
+        # Encode URL to handle non-ASCII characters
+        encoded_url = _encode_url(url)
         # Build input with defaults
-        input_dict = {"url": url, **WEB_READER_DEFAULTS}
+        input_dict = {"url": encoded_url, **WEB_READER_DEFAULTS}
         return await _original_web_reader.ainvoke(input_dict)
 
     return StructuredTool.from_function(

@@ -51,37 +51,54 @@ INTENT_ANALYZER_PROMPT = """You are an intent analyzer for a research agent. You
 - If a query asks "the 18th ranked country" or "top 3 items", you do NOT know what they are
 - The FIRST step must always be to SEARCH and DISCOVER unknown information
 
+**UNKNOWN TERM DETECTION:**
+Many queries contain abbreviated terms, slang, or unfamiliar names:
+- "두쫀쿠" (abbreviation) → First discover what it means
+- "넷플릭스 1위 드라마" → First find what the #1 drama is
+- "GPT-4o" → May need to clarify what this specific version is
+
+When you see an UNFAMILIAR or ABBREVIATED term:
+- Step 1: FIRST search "What is [term]?" or "[term]이란?"
+- Step 2: After discovering what it is, proceed with the actual query
+
 **SEQUENTIAL DEPENDENCY DETECTION:**
 When a query has a pattern like:
+- "[Unknown term]의 X는?" → Discover what the term means FIRST
 - "Find X, then find Y about X" → X must be discovered FIRST via search
 - "The country ranked Nth..." → You don't know which country, search first
 - "Top N items and their properties" → Find the N items first, then their properties
 
 Examples of SEQUENTIAL queries (need step-by-step):
+- "두쫀쿠의 재료와 칼로리"
+  → Step 1: "두쫀쿠란?" or "두쫀쿠 무엇" (discover what 두쫀쿠 is)
+  → Step 2: Will be determined AFTER Step 1 results (ingredients, calories)
+  → is_sequential: TRUE, return ONLY Step 1
+
 - "OECD GDP 18위 국가의 수도는?"
   → Step 1: "OECD GDP 순위" (find which country is 18th)
-  → Step 2: Will be determined AFTER Step 1 results (capital of that country)
-  → Return ONLY Step 1 as the first topic
+  → Step 2: Will be determined AFTER Step 1 results
+  → is_sequential: TRUE, return ONLY Step 1
 
 - "가장 인기있는 프로그래밍 언어 3개의 장단점"
-  → Step 1: "인기 프로그래밍 언어 순위" (find top 3 first)
+  → Step 1: "프로그래밍 언어 인기 순위" (find top 3 first)
   → Step 2: Will be determined AFTER Step 1 results
-  → Return ONLY Step 1 as the first topic
+  → is_sequential: TRUE, return ONLY Step 1
 
 **PARALLEL/INDEPENDENT topics (can be researched simultaneously):**
-- "AI 동향과 블록체인 전망" = 2 independent topics
-- "부산과 순천의 인구 비교" = 2 independent topics (both known entities)
+- "AI 동향과 블록체인 전망" = 2 independent topics (both well-known)
+- "부산과 순천의 인구 비교" = 2 independent topics (both well-known cities)
+- "Python과 Java 비교" = Can research both in parallel (both well-known)
 
 Rules:
-- For SEQUENTIAL queries: Return ONLY the first discovery step as a single topic
-- For PARALLEL queries: Return all independent topics
+- For SEQUENTIAL queries (unknown terms, rankings, lists): Return ONLY the first discovery step
+- For PARALLEL queries (all terms are well-known): Return all independent topics
 - Maximum 4 main topics per query
 - DO NOT fill in unknown values - they must be searched
 - Respond in the same language as the user's query
 
 Output ONLY valid JSON in this exact format:
 {{
-    "analysis": "Brief explanation - is this sequential or parallel?",
+    "analysis": "Brief explanation - is this sequential (unknown terms/rankings) or parallel (all known)?",
     "is_sequential": true/false,
     "intent_count": <number>,
     "main_topics": [
@@ -179,30 +196,52 @@ Search Results:
 **YOUR TASK: Extract discovered information and plan the next step**
 
 The original query may have required discovering something first. Now that we have search results:
-1. What specific information was discovered? (e.g., "18th ranked country is Turkey")
-2. What is the NEXT step based on the original query?
+1. What specific information was discovered?
+2. Based on the ORIGINAL query, what is the NEXT step?
 
-Examples:
+**DISCOVERY CHAIN EXAMPLES:**
 
-Example 1 - Sequential discovery:
+Example 1 - Term discovery → Ingredient discovery → Property lookup:
+- Original: "두쫀쿠의 재료와 칼로리"
+- Search 1: "두쫀쿠란?" → Discovered: "두바이 쫀득 쿠키"
+- → needs_replanning: true
+- → extracted_items: ["두바이 쫀득 쿠키"]
+- → query_template: "{{item}} 재료"
+- → purpose: "Find ingredients"
+
+- Search 2: "두바이 쫀득 쿠키 재료" → Discovered: "카다이프, 피스타치오, 마시멜로"
+- → needs_replanning: true
+- → extracted_items: ["카다이프", "피스타치오", "마시멜로"]
+- → query_template: "{{item}} 칼로리"
+- → purpose: "Find calorie info for each ingredient"
+
+Example 2 - Ranking discovery:
 - Original: "OECD GDP 18위 국가의 수도는?"
 - Current search: "OECD GDP 순위"
 - Results mention: "...18위 터키..."
-- → Extract: "터키" (the discovered 18th country)
-- → Next step: Search for "터키 수도"
+- → needs_replanning: true
+- → extracted_items: ["터키"]
+- → query_template: "{{item}} 수도"
+- → purpose: "Find the capital"
 
-Example 2 - Multiple items to research:
+Example 3 - Multiple items:
 - Original: "인기 프로그래밍 언어 3개의 장단점"
 - Current search: "프로그래밍 언어 인기 순위"
-- Results mention: "1위 Python, 2위 JavaScript, 3위 Java"
-- → Extract: ["Python", "JavaScript", "Java"]
-- → Next step: Search pros/cons for each
+- Results: "1위 Python, 2위 JavaScript, 3위 Java"
+- → needs_replanning: true
+- → extracted_items: ["Python", "JavaScript", "Java"]
+- → query_template: "{{item}} 장단점"
+- → purpose: "Find pros and cons for each"
 
-Example 3 - No follow-up needed:
+Example 4 - No follow-up needed:
 - Original: "Python이란?"
-- Current search: "Python 프로그래밍"
-- Results contain the answer directly
-- → No replanning needed
+- Results directly explain what Python is
+- → needs_replanning: false
+
+**IMPORTANT:** Look carefully at the original query. If it asks for:
+- "재료와 칼로리" → After finding ingredients, need to search calories for EACH
+- "장단점" → After finding items, need details for EACH
+- "수도/인구/etc" → After finding the entity, need its property
 
 Output ONLY valid JSON:
 {{
@@ -210,13 +249,13 @@ Output ONLY valid JSON:
     "reason": "What was discovered and why follow-up is needed",
     "extracted_items": ["discovered item 1", "discovered item 2"],
     "query_template": "{{item}} + what to search next",
-    "purpose": "What the follow-up will answer"
+    "purpose": "What the follow-up searches will answer"
 }}
 
 If no follow-up needed:
 {{
     "needs_replanning": false,
-    "reason": "Original query is answered / no sequential dependency",
+    "reason": "Original query is fully answered by current results",
     "extracted_items": [],
     "query_template": "",
     "purpose": ""

@@ -280,8 +280,16 @@ class ResearchController:
         elif not result_str.strip():
             result_text = "(empty)"
         else:
+            # Only check for specific MCP/tool error patterns, not generic words
+            error_patterns = [
+                "mcp error",
+                "toolexception",
+                "tool error:",
+                "connection error",
+                "timeout error",
+            ]
             result_lower = result_str.lower()
-            if "error" in result_lower or "failed" in result_lower or "exception" in result_lower:
+            if any(pattern in result_lower for pattern in error_patterns):
                 is_error = True
                 result_text = result_str[:200] + "..." if len(result_str) > 200 else result_str
             else:
