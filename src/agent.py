@@ -552,7 +552,14 @@ def build_hierarchical_plan(query: str, llm: ChatOpenAI) -> HierarchicalPlan:
             "refinement_count": 0
         }
 
-        # Phase 3: Validation
+        # Skip validation for sequential queries - they intentionally start minimal
+        # and will be expanded via dynamic replanning
+        if is_sequential:
+            debug_log(f"[build_hierarchical_plan] Skipping validation for sequential query")
+            plan["is_validated"] = True
+            return plan
+
+        # Phase 3: Validation (only for non-sequential queries)
         validation_result = validate_plan(query, plan, llm)
 
         # Phase 4: Refinement if needed (max 1 refinement to avoid loops)
@@ -847,6 +854,9 @@ def replan_node(state: ResearchState) -> dict:
     # Get the first new pending task
     next_main_id, next_sub_id = get_next_pending_task(updated_plan)
 
+    # Extract query strings for the event
+    new_query_strings = [q.get("query", "") for q in dynamic_queries]
+
     debug_log(f"[replan_node] END - next task: main={next_main_id}, sub={next_sub_id}")
 
     return {
@@ -857,6 +867,9 @@ def replan_node(state: ResearchState) -> dict:
         "needs_replanning": False,
         "pending_replan_request": None,
         "replan_count": state.get("replan_count", 0) + 1,
+        # Store for event emission (not cleared like pending_replan_request)
+        "last_replan_items": replan_request.get("extracted_items", []),
+        "last_replan_queries": new_query_strings,
         "messages": [AIMessage(content=f"Dynamic replanning: Added {len(dynamic_queries)} follow-up queries for items: {', '.join(replan_request['extracted_items'])}")],
     }
 
@@ -1191,6 +1204,8 @@ async def run_research_with_tools(query: str, callback=None, config={ "recursion
         "needs_replanning": False,
         "pending_replan_request": None,
         "replan_count": 0,
+        "last_replan_items": [],
+        "last_replan_queries": [],
     }
 
     def emit(event_type: str, data: dict):
@@ -1248,19 +1263,15 @@ async def run_research_with_tools(query: str, callback=None, config={ "recursion
 
                 # Emit dynamic replanning event when plan is updated
                 if node_name == "replan":
-                    replan_request = node_state.get("pending_replan_request")
                     h_plan = node_state.get("hierarchical_plan")
-                    if h_plan:
+                    last_items = node_state.get("last_replan_items", [])
+                    last_queries = node_state.get("last_replan_queries", [])
+                    if h_plan and (last_items or last_queries):
                         # Emit updated plan with dynamic tasks
                         emit("dynamic_replan", {
                             "replan_count": node_state.get("replan_count", 0),
-                            "extracted_items": replan_request.get("extracted_items", []) if replan_request else [],
-                            "new_queries": [
-                                st["query"]
-                                for mt in h_plan["main_tasks"]
-                                for st in mt["sub_tasks"]
-                                if st["status"] == TaskStatus.PENDING.value
-                            ]
+                            "extracted_items": last_items,
+                            "new_queries": last_queries,
                         })
 
                 # Emit task progress updates when task changes

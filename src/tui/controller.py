@@ -181,6 +181,9 @@ class ResearchController:
             result = data.get("result", "")
             self._handle_tool_result(tool_name, result)
 
+        elif event_type == "dynamic_replan":
+            self._handle_dynamic_replan(data)
+
         elif event_type == "thinking":
             msg = data.get("message", "")
             self.add_thinking_message(msg)
@@ -194,6 +197,7 @@ class ResearchController:
         loading_msgs = {
             "plan": "Creating plan",
             "research": "Analyzing",
+            "replan": "Replanning",
             "synthesize": "Writing report",
         }
         if node in loading_msgs:
@@ -357,6 +361,41 @@ class ResearchController:
         elif status == "completed":
             # Mark sub-task as completed
             self.update_task(f"sub_{sub_id}", TaskStatus.COMPLETED)
+
+    def _handle_dynamic_replan(self, data: dict):
+        """Handle dynamic replanning - add newly discovered tasks to UI."""
+        extracted_items = data.get("extracted_items", [])
+        new_queries = data.get("new_queries", [])
+        replan_count = data.get("replan_count", 0)
+
+        debug_log(f"Dynamic replan: extracted={extracted_items}, new_queries={len(new_queries)}")
+
+        self._hide_loading()
+
+        if extracted_items:
+            # Show system message about discovered items
+            items_str = ", ".join(extracted_items[:5])
+            if len(extracted_items) > 5:
+                items_str += f" (+{len(extracted_items) - 5} more)"
+            self.add_system_message(f"Discovered: {items_str}")
+
+        # Add new queries as sub-tasks
+        # Find the highest existing sub-task ID to continue numbering
+        existing_sub_ids = [t.id for t in self.state.tasks if t.id.startswith("sub_")]
+        existing_count = len(existing_sub_ids)
+
+        for i, query in enumerate(new_queries):
+            # Generate unique sub-task ID
+            sub_id = f"sub_1.{existing_count + i + 1}"
+
+            # Check if task already exists
+            if any(t.id == sub_id for t in self.state.tasks):
+                continue
+
+            # Truncate long queries for display
+            title = f"  └ {query[:38]}" if len(query) <= 38 else f"  └ {query[:35]}..."
+            debug_log(f"Creating dynamic sub task: {sub_id} - {title}")
+            self.create_task(sub_id, title)
 
     def cancel_research(self):
         self._hide_loading()

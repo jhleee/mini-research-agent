@@ -89,3 +89,5 @@ class ResearchState(TypedDict):
     needs_replanning: bool                              # Flag indicating replanning is needed
     pending_replan_request: Optional[DynamicQueryRequest]  # Pending dynamic query request
     replan_count: int                                   # Number of replanning iterations
+    last_replan_items: list[str]                        # Items discovered in last replan (for UI event)
+    last_replan_queries: list[str]                      # Queries added in last replan (for UI event)
